@@ -1,0 +1,18 @@
+# Overrides for apache-airflow/airflow helm chart 1.22.0 (default appVersion 3.2.2)
+# Pins the deployed image to Airflow 3.3.0 and exposes the API server via
+# the kind cluster's NodePort 30080 -> host port 8080 (see kind-config.yaml).
+
+airflowVersion: "3.3.0"
+defaultAirflowRepository: apache/airflow
+defaultAirflowTag: "3.3.0"
+
+executor: "CeleryExecutor"
+
+apiServer:
+  service:
+    type: NodePort
+    ports:
+      - name: api-server
+        port: 8080
+        targetPort: 8080
+        nodePort: 30080
