@@ -5,10 +5,13 @@ CHART_REPO      := apache-airflow
 CHART_REPO_URL  := https://airflow.apache.org
 CHART_VERSION   := 1.22.0
 AIRFLOW_VERSION := 3.3.0
+# Bump the revision suffix (.1, .2, ...) each time the Dockerfile picks up a
+# new CVE fix, and update the matching image line in values.yaml to match.
+IMAGE           := isliao613/airflow:3.3.0-hardened.1
 KIND_CONFIG     := kind-config.yaml
 VALUES_FILE     := values.yaml
 
-.PHONY: up down deploy cluster cluster-down status ui logs clean
+.PHONY: up down build load push deploy cluster cluster-down status ui logs clean
 
 up: cluster deploy ## Create the kind cluster and deploy Airflow (one-click)
 
@@ -24,7 +27,16 @@ cluster: ## Create the kind cluster
 cluster-down: ## Delete the kind cluster
 	kind delete cluster --name $(CLUSTER_NAME)
 
-deploy: ## Install/upgrade Airflow via Helm
+build: ## Build the CVE-hardened Airflow image
+	docker build -t $(IMAGE) .
+
+load: build ## Load the hardened image into the kind cluster
+	kind load docker-image $(IMAGE) --name $(CLUSTER_NAME)
+
+push: build ## Push the hardened image to the registry (run manually, not part of `up`)
+	docker push $(IMAGE)
+
+deploy: load ## Build, load, and install/upgrade Airflow via Helm
 	helm repo add $(CHART_REPO) $(CHART_REPO_URL) >/dev/null 2>&1 || true
 	helm repo update $(CHART_REPO)
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -

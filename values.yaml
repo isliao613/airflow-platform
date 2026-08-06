@@ -1,10 +1,13 @@
 # Overrides for apache-airflow/airflow helm chart 1.22.0 (default appVersion 3.2.2)
-# Pins the deployed image to Airflow 3.3.0 and exposes the API server via
-# the kind cluster's NodePort 30080 -> host port 8080 (see kind-config.yaml).
+# Deploys the CVE-hardened image (see Dockerfile) instead of pulling
+# apache/airflow:3.3.0 directly, and exposes the API server via the kind
+# cluster's NodePort 30080 -> host port 8080 (see kind-config.yaml).
+#
+# Keep this in sync with IMAGE in the Makefile.
 
 airflowVersion: "3.3.0"
-defaultAirflowRepository: apache/airflow
-defaultAirflowTag: "3.3.0"
+defaultAirflowRepository: isliao613/airflow
+defaultAirflowTag: "3.3.0-hardened.1"
 
 executor: "CeleryExecutor"
 
