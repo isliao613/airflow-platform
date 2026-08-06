@@ -5,13 +5,14 @@ CHART_REPO      := apache-airflow
 CHART_REPO_URL  := https://airflow.apache.org
 CHART_VERSION   := 1.22.0
 AIRFLOW_VERSION := 3.3.0
-# Bump the revision suffix (.1, .2, ...) each time the Dockerfile picks up a
-# new CVE fix, and update the matching image line in values.yaml to match.
-IMAGE           := isliao613/airflow:3.3.0-hardened.1
+# Bump the revision suffix (.1, .2, ...) each time the Dockerfile changes
+# (CVE fix, added DAGs, ...), and update the matching image line in
+# values.yaml to match.
+IMAGE           := isliao613/airflow:3.3.0-hardened.2
 KIND_CONFIG     := kind-config.yaml
 VALUES_FILE     := values.yaml
 
-.PHONY: up down build load push deploy cluster cluster-down status ui logs clean
+.PHONY: up down build load push deploy teams cluster cluster-down status ui logs clean
 
 up: cluster deploy ## Create the kind cluster and deploy Airflow (one-click)
 
@@ -57,7 +58,15 @@ deploy: load ## Build, load, and install/upgrade Airflow via Helm
 	kubectl rollout status statefulset/$(RELEASE_NAME)-triggerer -n $(NAMESPACE) --timeout=5m
 	kubectl rollout status statefulset/$(RELEASE_NAME)-worker -n $(NAMESPACE) --timeout=5m
 	@echo ""
-	@echo "Airflow $(AIRFLOW_VERSION) is up. UI: http://localhost:8080 (admin/admin)"
+	@echo "Airflow $(AIRFLOW_VERSION) is up. UI: http://localhost:8080"
+	@echo "First deploy only: run 'make teams' once, then 'make login' for passwords."
+
+teams: ## Create the team_data/team_ml DB rows the multi-team example needs
+	kubectl exec -n $(NAMESPACE) deploy/$(RELEASE_NAME)-scheduler -c scheduler -- airflow teams create team_data || true
+	kubectl exec -n $(NAMESPACE) deploy/$(RELEASE_NAME)-scheduler -c scheduler -- airflow teams create team_ml || true
+
+login: ## Print current SimpleAuthManager passwords (regenerated on every api-server restart)
+	kubectl exec -n $(NAMESPACE) deploy/$(RELEASE_NAME)-api-server -c api-server -- cat /opt/airflow/simple_auth_manager_passwords.json.generated
 
 status: ## Show pod status
 	kubectl get pods -n $(NAMESPACE)

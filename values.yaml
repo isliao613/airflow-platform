@@ -7,9 +7,30 @@
 
 airflowVersion: "3.3.0"
 defaultAirflowRepository: isliao613/airflow
-defaultAirflowTag: "3.3.0-hardened.1"
+defaultAirflowTag: "3.3.0-hardened.2"
 
 executor: "CeleryExecutor"
+
+# Multi-team requires an auth manager that implements _get_teams(); the
+# chart's default FabAuthManager (login page, admin/admin) doesn't, so this
+# switches to SimpleAuthManager -- dev-only: plaintext passwords, generated
+# fresh and logged on every pod restart (no persistent volume backs it here).
+# `simple_auth_manager_users` is `username:role[:team1|team2]`, comma-separated.
+config:
+  core:
+    auth_manager: "airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager"
+    multi_team: "True"
+    simple_auth_manager_users: "admin:ADMIN,data_user:USER:team_data,ml_user:USER:team_ml"
+  dag_processor:
+    # chart 1.22.0's dagProcessor.dagBundleConfigList helper drops any key
+    # other than name/classpath/kwargs, so team_name has to be set here
+    # directly instead. team_data/team_ml must already exist as DB Team rows
+    # (see Makefile `teams` target) before the dag-processor can sync these.
+    dag_bundle_config_list: '[{"name":"dags-folder","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{}},{"name":"team_data_dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags-multi-team-example/team_data/dags"},"team_name":"team_data"},{"name":"team_ml_dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags-multi-team-example/team_ml/dags"},"team_name":"team_ml"}]'
+
+# FAB-specific; irrelevant now that SimpleAuthManager owns user creation.
+createUserJob:
+  enabled: false
 
 apiServer:
   service:

@@ -21,3 +21,11 @@ RUN apt-get update \
 # 1.83.7), CVE-2026-49468 (fixed 1.84.0). Pin to a tested patched release.
 USER airflow
 RUN pip install --no-cache-dir "litellm==1.95.0"
+
+# --- DAGs --------------------------------------------------------------------
+# Every component (scheduler, dag-processor, api-server, worker, triggerer)
+# runs this same image, so baking DAGs in here gives them all identical,
+# consistent access without needing a PVC or git-sync.
+COPY --chown=airflow:0 dags/ /opt/airflow/dags/
+COPY --chown=airflow:0 dags-multi-team-example/team_data/dags/ /opt/airflow/dags-multi-team-example/team_data/dags/
+COPY --chown=airflow:0 dags-multi-team-example/team_ml/dags/ /opt/airflow/dags-multi-team-example/team_ml/dags/
