@@ -1,7 +1,9 @@
-# Overrides for apache-airflow/airflow helm chart 1.22.0 (default appVersion 3.2.2)
-# Deploys the CVE-hardened image (see Dockerfile) instead of pulling
-# apache/airflow:3.3.0 directly, and exposes the API server via the kind
-# cluster's NodePort 30080 -> host port 8080 (see kind-config.yaml).
+# Overrides for the apache-airflow/airflow helm chart 1.22.0 (default appVersion
+# 3.2.2), installed from the Docker Hub OCI mirror (oci://registry-1.docker.io/
+# isliao613/airflow, see CHART_OCI_REPO in the Makefile) instead of the
+# upstream chart repo. Deploys the CVE-hardened image (see Dockerfile) instead
+# of pulling apache/airflow:3.3.0 directly, and exposes the API server via the
+# kind cluster's NodePort 30080 -> host port 8080 (see kind-config.yaml).
 #
 # Keep this in sync with IMAGE in the Makefile.
 

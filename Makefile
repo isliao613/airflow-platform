@@ -1,8 +1,13 @@
 CLUSTER_NAME    := airflow
 NAMESPACE       := airflow
 RELEASE_NAME    := airflow
-CHART_REPO      := apache-airflow
-CHART_REPO_URL  := https://airflow.apache.org
+CHART_UPSTREAM_REPO := apache-airflow
+CHART_UPSTREAM_URL  := https://airflow.apache.org
+# Chart is mirrored to Docker Hub as an OCI artifact (see chart-push) so
+# `deploy` doesn't depend on the upstream chart repo being reachable. Bump
+# CHART_VERSION and re-run `make chart-push` to pick up a new chart release.
+CHART_OCI_NAMESPACE := oci://registry-1.docker.io/isliao613
+CHART_OCI_REPO      := $(CHART_OCI_NAMESPACE)/airflow
 CHART_VERSION   := 1.22.0
 AIRFLOW_VERSION := 3.3.0
 # Bump the revision suffix (.1, .2, ...) each time the Dockerfile picks up a
@@ -11,7 +16,7 @@ IMAGE           := isliao613/airflow:3.3.0-hardened.1
 KIND_CONFIG     := kind-config.yaml
 VALUES_FILE     := values.yaml
 
-.PHONY: up down build load push deploy cluster cluster-down status ui logs clean
+.PHONY: up down build load push deploy cluster cluster-down status ui logs clean chart-pull chart-push
 
 up: cluster deploy ## Create the kind cluster and deploy Airflow (one-click)
 
@@ -36,9 +41,16 @@ load: build ## Load the hardened image into the kind cluster
 push: build ## Push the hardened image to the registry (run manually, not part of `up`)
 	docker push $(IMAGE)
 
-deploy: load ## Build, load, and install/upgrade Airflow via Helm
-	helm repo add $(CHART_REPO) $(CHART_REPO_URL) >/dev/null 2>&1 || true
-	helm repo update $(CHART_REPO)
+chart-pull: ## Pull the upstream apache-airflow chart package for mirroring
+	helm repo add $(CHART_UPSTREAM_REPO) $(CHART_UPSTREAM_URL) >/dev/null 2>&1 || true
+	helm repo update $(CHART_UPSTREAM_REPO)
+	helm pull $(CHART_UPSTREAM_REPO)/airflow --version $(CHART_VERSION)
+
+chart-push: chart-pull ## Mirror the chart to Docker Hub as an OCI artifact (run manually, not part of `up`)
+	helm push airflow-$(CHART_VERSION).tgz $(CHART_OCI_NAMESPACE)
+	rm -f airflow-$(CHART_VERSION).tgz
+
+deploy: load ## Build, load, and install/upgrade Airflow via Helm (chart from Docker Hub OCI mirror)
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 	# Note: no `--wait` here. The chart's DB-migration job is a post-install
 	# hook, but Helm's `--wait` blocks on the main Deployments/StatefulSets
@@ -46,7 +58,7 @@ deploy: load ## Build, load, and install/upgrade Airflow via Helm
 	# init-containers wait on the migration job to finish first, so
 	# `--wait` deadlocks. We wait explicitly afterward instead, once the
 	# migration hook has actually run.
-	helm upgrade --install $(RELEASE_NAME) $(CHART_REPO)/airflow \
+	helm upgrade --install $(RELEASE_NAME) $(CHART_OCI_REPO) \
 		--namespace $(NAMESPACE) \
 		--version $(CHART_VERSION) \
 		-f $(VALUES_FILE) \

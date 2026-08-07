@@ -16,7 +16,8 @@ make up
 ```
 
 This creates the `airflow` kind cluster, installs the `apache-airflow/airflow`
-Helm chart (pinned to `1.22.0`, image pinned to `3.3.0`), and waits for
+Helm chart (pinned to `1.22.0`, image pinned to `3.3.0`) from a Docker Hub OCI
+mirror (`oci://registry-1.docker.io/isliao613/airflow`), and waits for
 everything to come up.
 
 UI: http://localhost:8080 (login `admin` / `admin`, from the chart's default
@@ -41,9 +42,21 @@ UI: http://localhost:8080 (login `admin` / `admin`, from the chart's default
 | `make logs`   | Tail scheduler logs                                  |
 | `make ui`     | Print the UI URL                                     |
 | `make clean`  | Uninstall Airflow and delete the kind cluster        |
+| `make chart-pull` | Pull the upstream chart package (for mirroring)  |
+| `make chart-push` | Mirror the chart to Docker Hub as an OCI artifact (manual, not part of `up`) |
 
 Airflow runs `CeleryExecutor` with the chart's bundled Postgres and Redis
 subcharts (both enabled by default) — no external dependencies required.
+
+## Updating the chart mirror
+
+`make deploy` installs from the Docker Hub OCI mirror, not the upstream chart
+repo, so it doesn't depend on `https://airflow.apache.org` being reachable.
+To pick up a new chart version:
+
+1. Bump `CHART_VERSION` in the Makefile.
+2. `helm registry login registry-1.docker.io -u isliao613`
+3. `make chart-push`
 
 ## Cleanup
 
