@@ -10,9 +10,13 @@ CHART_OCI_NAMESPACE := oci://registry-1.docker.io/isliao613
 CHART_OCI_REPO      := $(CHART_OCI_NAMESPACE)/airflow
 CHART_VERSION   := 1.22.0
 AIRFLOW_VERSION := 3.3.0
-# Bump the revision suffix (.1, .2, ...) each time the Dockerfile picks up a
-# new CVE fix, and update the matching image line in values.yaml to match.
-IMAGE           := isliao613/airflow:3.3.0-hardened.1
+# Single source of truth for the image. `build`/`load` tag from these, and
+# `deploy` passes them to Helm with --set, so the image that gets built and the
+# one the pods actually run can't drift apart. Bump the revision suffix
+# (.1, .2, ...) each time the Dockerfile picks up a new CVE fix.
+IMAGE_REPO      := isliao613/airflow
+IMAGE_TAG       := 3.3.0-hardened.1
+IMAGE           := $(IMAGE_REPO):$(IMAGE_TAG)
 KIND_CONFIG     := kind-config.yaml
 VALUES_FILE     := values.yaml
 
@@ -62,6 +66,9 @@ deploy: load ## Build, load, and install/upgrade Airflow via Helm (chart from Do
 		--namespace $(NAMESPACE) \
 		--version $(CHART_VERSION) \
 		-f $(VALUES_FILE) \
+		--set airflowVersion=$(AIRFLOW_VERSION) \
+		--set defaultAirflowRepository=$(IMAGE_REPO) \
+		--set defaultAirflowTag=$(IMAGE_TAG) \
 		--timeout 15m
 	kubectl rollout status deployment/$(RELEASE_NAME)-api-server -n $(NAMESPACE) --timeout=5m
 	kubectl rollout status deployment/$(RELEASE_NAME)-scheduler -n $(NAMESPACE) --timeout=5m

@@ -1,15 +1,17 @@
-# Overrides for the apache-airflow/airflow helm chart 1.22.0 (default appVersion
-# 3.2.2), installed from the Docker Hub OCI mirror (oci://registry-1.docker.io/
-# isliao613/airflow, see CHART_OCI_REPO in the Makefile) instead of the
-# upstream chart repo. Deploys the CVE-hardened image (see Dockerfile) instead
-# of pulling apache/airflow:3.3.0 directly, and exposes the API server via the
-# kind cluster's NodePort 30080 -> host port 8080 (see kind-config.yaml).
+# Overrides for the apache-airflow/airflow helm chart 1.22.0, installed from the
+# Docker Hub OCI mirror (oci://registry-1.docker.io/isliao613/airflow, see
+# CHART_OCI_REPO in the Makefile) instead of the upstream chart repo. Exposes
+# the API server via the kind cluster's NodePort 30080 -> host port 8080 (see
+# kind-config.yaml).
 #
-# Keep this in sync with IMAGE in the Makefile.
-
-airflowVersion: "3.3.0"
-defaultAirflowRepository: isliao613/airflow
-defaultAirflowTag: "3.3.0-hardened.1"
+# The Airflow version and image are deliberately NOT set here. `make deploy`
+# passes airflowVersion / defaultAirflowRepository / defaultAirflowTag via
+# --set, from AIRFLOW_VERSION and IMAGE_REPO/IMAGE_TAG in the Makefile, so the
+# image that `make build` produces is always the image the pods run.
+#
+# Consequence: installing this file with plain `helm` instead of `make deploy`
+# falls back to the chart's own defaults -- appVersion 3.2.2 and the upstream
+# apache/airflow image, i.e. without the CVE hardening from the Dockerfile.
 
 executor: "CeleryExecutor"
 
