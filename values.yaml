@@ -7,13 +7,38 @@
 # The Airflow version and image are deliberately NOT set here. `make deploy`
 # passes airflowVersion / defaultAirflowRepository / defaultAirflowTag via
 # --set, from AIRFLOW_VERSION and IMAGE_REPO/IMAGE_TAG in the Makefile, so the
-# image that `make build` produces is always the image the pods run.
+# image that `make build` produces is always the image the pods run. The
+# sidecar image below is filled in from the same variables.
 #
 # Consequence: installing this file with plain `helm` instead of `make deploy`
 # falls back to the chart's own defaults -- appVersion 3.2.2 and the upstream
 # apache/airflow image, i.e. without the CVE hardening from the Dockerfile.
 
 executor: "CeleryExecutor"
+
+# Chart 1.22.0 renders the api secret as an ordinary resource with a
+# `randAlphaNum 32` default, so every `helm upgrade` -- which is what
+# `make deploy` runs -- would mint a new key while the running pods keep the
+# old one in their env, silently invalidating sessions on the next restart.
+# (The fernet key is not affected: its template is a pre-install hook.)
+# Pinning it makes re-deploys idempotent. Local-only value.
+apiSecretKey: "airflow-local-dev-api-secret-key"
+
+# Chart 1.22.0's migration job runs only `airflow db migrate`. The FAB auth
+# manager keeps its own alembic history (users, roles, permissions) that is
+# migrated by `airflow fab-db migrate`, and nothing in the chart runs it. Since
+# this deployment authenticates through FAB, run both here. Both are idempotent.
+migrateDatabaseJob:
+  args:
+    - "bash"
+    - "-c"
+    - "airflow db migrate && airflow fab-db migrate"
+
+# The chart's default createUserJob mints a local admin/admin. Under
+# AUTH_TYPE = AUTH_OAUTH the login form is gone, so that user can never sign in
+# and only adds a confusing failure mode. Identities come from Keycloak.
+createUserJob:
+  enabled: false
 
 apiServer:
   service:
@@ -23,3 +48,28 @@ apiServer:
         port: 8080
         targetPort: 8080
         nodePort: 30080
+
+  # Publishes Keycloak inside the api-server pod at the exact URL the browser
+  # uses (http://localhost:8081), so the OIDC issuer matches on both sides.
+  # Without this the browser would need a cluster-internal hostname, or Airflow
+  # a host-side one, and the issuer check would fail either way.
+  #
+  # Runs the Airflow image itself (already loaded into kind, with socat
+  # installed by the Dockerfile) to avoid pulling a second image just to
+  # forward a port. `.image` is overridden from the Makefile.
+  extraContainers:
+    - name: keycloak-proxy
+      image: PLACEHOLDER_SET_FROM_MAKEFILE
+      command: ["socat"]
+      args:
+        - "TCP-LISTEN:8081,fork,reuseaddr"
+        - "TCP:airflow-keycloak:8080"
+      ports:
+        - name: keycloak
+          containerPort: 8081
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
