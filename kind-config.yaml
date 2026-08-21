@@ -8,9 +8,9 @@ nodes:
       - containerPort: 30080
         hostPort: 8080
         protocol: TCP
-      # Keycloak. The host port must stay 8081: it is baked into the OIDC
+      # Keycloak. The host port must stay 8181: it is baked into the OIDC
       # issuer (KC_HOSTNAME in sso/keycloak.yaml) and into the sidecar port
       # the Airflow api-server dials, and all three have to agree.
       - containerPort: 30081
-        hostPort: 8081
+        hostPort: 8181
         protocol: TCP

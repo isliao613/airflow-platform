@@ -5,9 +5,9 @@
 #
 # URL consistency matters here: OIDC tokens carry an issuer, and the browser and
 # the Airflow API server must agree on it. Both therefore reach Keycloak at
-# exactly http://localhost:8081 --
-#   * browser  -> host port 8081 -> kind extraPortMapping -> NodePort 30081
-#   * airflow  -> a socat sidecar in the api-server pod listening on 127.0.0.1:8081
+# exactly http://localhost:8181 --
+#   * browser  -> host port 8181 -> kind extraPortMapping -> NodePort 30081
+#   * airflow  -> a socat sidecar in the api-server pod listening on 127.0.0.1:8181
 # See apiServer.extraContainers in values.yaml for the sidecar.
 apiVersion: v1
 kind: Service
@@ -49,7 +49,7 @@ spec:
           image: KEYCLOAK_IMAGE_PLACEHOLDER
           args: ["start-dev", "--import-realm"]
           env:
-            # Dev-mode admin for the Keycloak console itself (http://localhost:8081).
+            # Dev-mode admin for the Keycloak console itself (http://localhost:8181).
             # Unrelated to the three Airflow users in the imported realm.
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               value: "admin"
@@ -58,7 +58,7 @@ spec:
             # Must match the URL both the browser and Airflow use, or the issuer
             # in the issued tokens will not line up.
             - name: KC_HOSTNAME
-              value: "http://localhost:8081"
+              value: "http://localhost:8181"
             - name: KC_HTTP_ENABLED
               value: "true"
             - name: KC_HTTP_PORT

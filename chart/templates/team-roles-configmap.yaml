@@ -1,0 +1,11 @@
+# Team roles definition, read from files/roles.json at this chart's root
+# (NOT under templates/ -- .Files.Get only sees non-template files). Edit
+# files/roles.json and re-run `make deploy` (or `make up`) to pick up a
+# change; the Job below re-imports it idempotently on every install/upgrade.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: team-roles
+data:
+  roles.json: |
+{{ .Files.Get "files/roles.json" | indent 4 }}

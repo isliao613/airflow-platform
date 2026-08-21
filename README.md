@@ -18,10 +18,12 @@ make up
 
 This creates the `airflow` kind cluster, deploys Keycloak and imports the
 `airflow` realm, builds the CVE-hardened Airflow image from the `Dockerfile`,
-loads it into the cluster with `kind load` (no registry push needed), installs
-the `apache-airflow/airflow` Helm chart (pinned to `1.22.0`) from a Docker Hub
-OCI mirror, and then creates the team roles and applies each DAG's
-`access_control`.
+loads it into the cluster with `kind load` (no registry push needed), and
+installs `chart/` -- this repo's own umbrella Helm chart, which wraps the
+`apache-airflow/airflow` chart (pinned to `1.22.0`, from a Docker Hub OCI
+mirror) as a dependency, plus its own `templates/sync-team-roles-job.yaml` --
+a post-install/post-upgrade hook Job that creates the team roles and applies
+each DAG's `access_control` once the release installs.
 
 The image build is the slowest step and the one most likely to fail first: it
 pulls the `apache/airflow:3.3.0` base image, applies OS updates, and installs a
@@ -32,18 +34,21 @@ directly -- see `Dockerfile` for what is patched and why.
 | Service          | URL                     | Credentials                       |
 |------------------|-------------------------|-----------------------------------|
 | Airflow UI       | http://localhost:8080   | "Sign in with keycloak"           |
-| Keycloak console | http://localhost:8081   | `admin` / `admin`                 |
+| Keycloak console | http://localhost:8181   | `admin` / `admin`                 |
 
 ## SSO and per-team DAG isolation
 
 Identities live in Keycloak, not in Airflow. Three groups map to three Airflow
-roles, and each role can see exactly one DAG:
+roles, and each role can see exactly one DAG; a fourth group maps to the
+built-in `Admin` role, which sees every DAG and can manage users, roles,
+connections, and variables:
 
-| Keycloak user | Password | Keycloak group    | Airflow role | Visible DAG        |
-|---------------|----------|-------------------|--------------|--------------------|
-| `alice`       | `alice`  | `airflow-team-a`  | `team_a`     | `team_a_pipeline`  |
-| `bob`         | `bob`    | `airflow-team-b`  | `team_b`     | `team_b_pipeline`  |
-| `carol`       | `carol`  | `airflow-team-c`  | `team_c`     | `team_c_pipeline`  |
+| Keycloak user | Password | Keycloak group    | Airflow role | Visible DAG(s)      |
+|---------------|----------|-------------------|--------------|----------------------|
+| `alice`       | `alice`  | `airflow-team-a`  | `team_a`     | `team_a_pipeline`    |
+| `bob`         | `bob`    | `airflow-team-b`  | `team_b`     | `team_b_pipeline`    |
+| `carol`       | `carol`  | `airflow-team-c`  | `team_c`     | `team_c_pipeline`    |
+| `admin`       | `admin`  | `airflow-admins`  | `Admin`      | all three            |
 
 Signing in as `alice` shows one DAG. `team_b_pipeline` and `team_c_pipeline` are
 absent from the DAG list, and navigating to their URLs directly returns 403.
@@ -59,13 +64,15 @@ Airflow uses the FAB auth manager (the chart's default) with
    `userinfo.token.claim=true` -- Flask-AppBuilder's built-in `keycloak`
    handler reads groups from the *userinfo* endpoint, so that last flag is not
    optional.
-2. **FAB maps groups to roles.** `AUTH_ROLES_MAPPING` in
-   `airflow/webserver_config.py` turns `airflow-team-a` into the `team_a` role,
-   and `AUTH_ROLES_SYNC_AT_LOGIN = True` re-applies it on every login -- so
-   moving a user between groups in Keycloak takes effect on their next sign-in,
-   with no action in Airflow.
-3. **Team roles hold no global DAG permission.** `airflow/roles.json` gives
-   each team role the built-in Viewer permissions **minus** `can_read` on the
+2. **FAB maps groups to roles.** `AUTH_ROLES_MAPPING` in the
+   `webserver_config.py` embedded in `chart/values.yaml` (see
+   `airflow.apiServer.apiServerConfig`) turns `airflow-team-a` into the
+   `team_a` role, and `AUTH_ROLES_SYNC_AT_LOGIN = True` re-applies it on
+   every login -- so moving a user between groups in Keycloak takes effect on
+   their next sign-in, with no action in Airflow.
+3. **Team roles hold no global DAG permission.** `chart/files/roles.json`
+   gives each team role the built-in Viewer permissions **minus** `can_read`
+   on the
    global `DAGs` resource. That single omission is the whole mechanism:
    `FabAuthManager._is_authorized_dag()` short-circuits to "allow everything"
    for anyone holding it.
@@ -76,72 +83,107 @@ Airflow uses the FAB auth manager (the chart's default) with
    on a `DAG:` resource as permission to list -- and then filters the list down
    to exactly those DAGs.
 
-`make sso-perms` runs steps 3 and 4. It waits for the dag processor to
-serialize the DAG files first, because `sync-perm` reads `access_control` from
-the serialized DAGs in the database, not from the files on disk.
+Steps 3 and 4 are done by `chart/templates/sync-team-roles-job.yaml`, a
+post-install/post-upgrade hook Job defined directly in this repo's own
+umbrella chart. It's installed as part of the same Helm release as the
+airflow dependency (Helm merges hooks from a root chart and its dependencies
+into one ordering for the release), so it can read that release's own
+secrets (`airflow-metadata`, `airflow-fernet-key`) and `airflow.cfg`
+(`airflow-config`, needed because that's where `auth_manager` is set)
+directly via `.Release.Name` -- no separate config needed. It waits for the
+dag processor to serialize the DAG files (`sync-perm` reads `access_control`
+from the serialized DAGs in the database, not from the files on disk), then
+runs `airflow roles import` and `airflow sync-perm --include-dags`. Helm
+always blocks on hook Jobs, so `helm upgrade --install` (i.e. `make deploy`)
+doesn't return until this
+finishes.
 
-### Why both sides reach Keycloak at `localhost:8081`
+### Where webserver_config.py lives
+
+It's set directly in `chart/values.yaml` as `airflow.apiServer.apiServerConfig`,
+rendered through Helm's `tpl` and mounted by the chart -- not baked into the
+image. This is safe here because the file has no `{{ }}` Go-template syntax,
+only Python's own `{}` dict/f-string literals, which `tpl` ignores.
+
+One quirk to know about: `scheduler`/`worker`/`triggerer`/`dag-processor` all
+mount webserver_config.py too (every component needs the same
+`AUTH_ROLES_MAPPING` to authorize consistently), but they read
+`airflow.webserver.webserverConfig`, not `airflow.apiServer.apiServerConfig`
+-- a leftover from the chart splitting `webserver` into `api-server` for
+Airflow 3 without updating every component's config-mount key.
+`chart/values.yaml` sets both from a single YAML anchor (`&webserverConfig` /
+`*webserverConfig`) so there's only one copy to edit.
+
+The upside of this over baking the file into the image: changing SSO config
+now only needs `make deploy`, not a full `make build`/`load`/`deploy` cycle.
+
+### Why both sides reach Keycloak at `localhost:8181`
 
 OIDC tokens carry an issuer, and the browser and the Airflow API server have to
 agree on it. They reach the same Keycloak by different routes:
 
-- **Browser** -> host port 8081 -> kind `extraPortMapping` -> NodePort 30081
+- **Browser** -> host port 8181 -> kind `extraPortMapping` -> NodePort 30081
 - **API server** -> a `socat` sidecar in its own pod listening on
-  `127.0.0.1:8081`, forwarding to the `airflow-keycloak` Service
+  `127.0.0.1:8181`, forwarding to the `airflow-keycloak` Service
 
-Both therefore use the literal URL `http://localhost:8081`, so the issuer
+Both therefore use the literal URL `http://localhost:8181`, so the issuer
 matches and no host-side `/etc/hosts` entry is required. The sidecar runs the
 Airflow image itself (already in the cluster, with `socat` added by the
 `Dockerfile`) rather than pulling a second image just to forward a port.
 
 Changing the host port means changing it in three places: `kind-config.yaml`,
-`KC_HOSTNAME` in `sso/keycloak.yaml`, and the sidecar in `values.yaml`.
+`KC_HOSTNAME` in `sso/keycloak.yaml`, and the sidecar in `chart/values.yaml`.
 
-### There is no Airflow admin
+### The admin group
 
-The three groups above are the only identities, by design, and none of them
-maps to Airflow's `Admin` role -- so nobody can manage Airflow's users, roles,
-connections, or variables through the UI. Manage identities in the Keycloak
-console instead.
-
-To add an admin, create a fourth Keycloak group and map it:
+`airflow-admins` is the one group that maps to a built-in role instead of a
+per-team one:
 
 ```python
-# airflow/webserver_config.py
+# webserver_config.py, embedded in chart/values.yaml
 AUTH_ROLES_MAPPING = {
-    "airflow-admins": ["Admin"],
+    "airflow-team-a": ["team_a"],
     ...
+    "airflow-admins": ["Admin"],
 }
 ```
 
-`Admin` is a built-in role, so it needs no entry in `airflow/roles.json` --
-but note it holds global `DAGs` permission and therefore sees every DAG.
+`Admin` needs no entry in `chart/files/roles.json` -- it's built into FAB
+already, with every permission on every resource. That's also the caveat:
+unlike the team roles, `Admin` holds the global `DAGs` permission, so
+`admin`/`admin` sees and can edit every team's DAG, and can manage Airflow's
+users, roles, connections, and variables through the UI -- the one identity
+in this realm that isn't scoped to a single team. Manage Keycloak identities
+themselves (adding/removing users or groups) through the Keycloak console.
 
 ## Files
 
 | File                        | Purpose                                                              |
 |-----------------------------|----------------------------------------------------------------------|
-| `kind-config.yaml`          | Single-node kind cluster; NodePorts `30080`/`30081` -> host `8080`/`8081` |
-| `Dockerfile`                | CVE-hardened image; bakes in `dags/` and the SSO config              |
-| `values.yaml`               | Chart overrides: NodePort, pinned api secret, Keycloak sidecar       |
+| `kind-config.yaml`          | Single-node kind cluster; NodePorts `30080`/`30081` -> host `8080`/`8181` |
+| `Dockerfile`                | CVE-hardened image; bakes in `dags/`                                 |
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
 | `dags/`                     | Three demo DAGs, one per team, each with `access_control`            |
 | `sso/realm-airflow.json`    | Keycloak realm: 3 groups, 3 users, the `airflow` OIDC client         |
 | `sso/keycloak.yaml`         | Keycloak Deployment + Service                                        |
-| `airflow/webserver_config.py` | Flask-AppBuilder OAuth config (baked into the image)               |
-| `airflow/roles.json`        | The three team roles, imported by `airflow roles import`             |
+| `chart/`                    | This repo's own umbrella Helm chart -- deploys `airflow` (a dependency, pinned in `chart/Chart.yaml`) as one Helm release together with this chart's own templates |
+| `chart/Chart.yaml`          | Declares the `airflow` chart dependency (OCI mirror, pinned version) |
+| `chart/Chart.lock`          | Pins the resolved dependency digest; committed like a lockfile        |
+| `chart/values.yaml`         | Overrides for the `airflow` dependency (under the `airflow:` key): NodePort, pinned api secret, Keycloak sidecar, and the Flask-AppBuilder/Keycloak SSO config (`apiServer.apiServerConfig` / `webserver.webserverConfig`); also `image:` for this chart's own hook Job |
+| `chart/templates/sync-team-roles-job.yaml` | Post-install/post-upgrade hook Job that creates the team roles and applies each DAG's `access_control` |
+| `chart/files/roles.json`    | The three team roles, imported by `airflow roles import`             |
 
 ## Targets
 
 | Target              | Description                                                        |
 |---------------------|---------------------------------------------------------------------|
-| `make up`           | Everything: cluster, Keycloak, Airflow, permissions (default)        |
+| `make up`           | Everything: cluster, Keycloak, Airflow + permissions (default)       |
 | `make cluster`      | Create the kind cluster only                                         |
 | `make sso`          | Deploy Keycloak and (re-)import the realm                            |
 | `make build`        | Build the CVE-hardened Airflow image                                 |
 | `make load`         | Build the image and load it into the kind cluster                    |
-| `make deploy`       | Build, load, and install/upgrade Airflow via Helm                    |
-| `make sso-perms`    | Create team roles and apply each DAG's `access_control`              |
+| `make dep-build`    | Fetch the `airflow` chart dependency into `chart/charts/`             |
+| `make deploy`       | Build, load, and install/upgrade `chart/` via Helm (one release: Airflow + the team-roles-job hook, which creates team roles and applies each DAG's `access_control`) |
 | `make status`       | Show pod status                                                      |
 | `make logs`         | Tail scheduler logs                                                  |
 | `make ui`           | Print the UI URLs                                                    |
@@ -168,7 +210,7 @@ to mount:
 
 1. Add or edit a file in `dags/`, with an `access_control` entry naming a team
    role.
-2. `make up` (or `make deploy sso-perms`).
+2. `make up` (or `make deploy`).
 
 A DAG with no `access_control` is visible to nobody, since no team role holds
 the global `DAGs` permission.
@@ -178,25 +220,29 @@ the global `DAGs` permission.
 1. Edit `sso/realm-airflow.json`.
 2. `make sso` -- the realm ships as a ConfigMap and the target restarts Keycloak
    so the change is re-imported.
-3. New groups also need an `AUTH_ROLES_MAPPING` entry in
-   `airflow/webserver_config.py` and a role in `airflow/roles.json`, then
-   `make deploy sso-perms`.
+3. New groups also need an `AUTH_ROLES_MAPPING` entry in the
+   `webserver_config.py` embedded in `chart/values.yaml` and a role in
+   `chart/files/roles.json`, then `make deploy`.
 
 ## Updating the image
 
 `IMAGE_REPO` / `IMAGE_TAG` in the Makefile are the single source of truth: the
 `docker build` tag, the `kind load` tag, the sidecar image, and the
-`defaultAirflowRepository` / `defaultAirflowTag` that Helm renders into the pod
-spec all derive from them. So picking up a new CVE fix is a one-line change:
+`defaultAirflowRepository` / `defaultAirflowTag` / this chart's own top-level
+`image.*` (for the team-roles-job hook) that Helm renders into the pod specs
+all derive from them. So picking up a new CVE fix is a one-line change:
 
 1. Edit the `Dockerfile`.
 2. Bump the revision suffix in `IMAGE_TAG` (`3.3.0-hardened.1` -> `.2`).
 3. `make up`
 
-Don't hardcode the image in `values.yaml`. The Airflow image is overridden with
-`--set` at deploy time, and the sidecar image is rendered from the placeholder
-into `.values.rendered.yaml`, so a literal tag there would either be ignored or
-silently overwritten while looking authoritative.
+Don't hardcode an image, version, or tag directly in `chart/values.yaml` --
+those fields are placeholder tokens (`IMAGE_REPO_PLACEHOLDER`,
+`IMAGE_TAG_PLACEHOLDER`, `AIRFLOW_VERSION_PLACEHOLDER`,
+`PLACEHOLDER_SET_FROM_MAKEFILE`), substituted by `make deploy`'s `sed` pass
+into `chart/.values.rendered.yaml`. A literal value there would only be used
+by someone bypassing the Makefile and calling `helm upgrade` directly --
+`make deploy` always overwrites it with the real value on every run.
 
 Note that `apt-get upgrade` in the `Dockerfile` makes builds deliberately
 non-reproducible: the same tag rebuilt weeks later can contain different
@@ -204,21 +250,26 @@ packages. Bump `IMAGE_TAG` when you need one rebuild told apart from another.
 
 ## Updating the chart mirror
 
-`make deploy` installs from the Docker Hub OCI mirror, not the upstream chart
-repo, so it doesn't depend on `https://airflow.apache.org` being reachable.
-To pick up a new chart version:
+`make deploy` installs the `airflow` dependency from the Docker Hub OCI
+mirror, not the upstream chart repo, so it doesn't depend on
+`https://airflow.apache.org` being reachable. To pick up a new chart version:
 
 1. Bump `CHART_VERSION` in the Makefile.
 2. `helm registry login registry-1.docker.io -u isliao613`
 3. `make chart-push`
+4. Bump the matching `version:` under `dependencies:` in `chart/Chart.yaml`.
+5. `make dep-build` (or just `make deploy`, which runs it) to refetch into
+   `chart/charts/` and update `chart/Chart.lock`.
 
 ## Credentials
 
 Every credential in this repo is a hardcoded local-development value: the
-Keycloak admin, the three demo users, the OIDC client secret in
-`sso/realm-airflow.json` and `airflow/webserver_config.py`, and `apiSecretKey`
-in `values.yaml`. They exist so `make up` needs no setup. Replace all of them
-before this is reachable by anyone but you.
+Keycloak admin, the four demo users (including `admin`/`admin` for Airflow),
+the OIDC client secret in
+`sso/realm-airflow.json` and in the `webserver_config.py` embedded in
+`chart/values.yaml`, and `apiSecretKey` also in `chart/values.yaml`. They
+exist so `make up` needs no setup. Replace all of them before this is
+reachable by anyone but you.
 
 ## Cleanup
 

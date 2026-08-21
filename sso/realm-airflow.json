@@ -22,6 +22,11 @@
       "name": "airflow-team-c",
       "path": "/airflow-team-c",
       "attributes": {}
+    },
+    {
+      "name": "airflow-admins",
+      "path": "/airflow-admins",
+      "attributes": {}
     }
   ],
   "users": [
@@ -77,6 +82,24 @@
       ],
       "groups": [
         "/airflow-team-c"
+      ]
+    },
+    {
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "admin@example.com",
+      "firstName": "Admin",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/airflow-admins"
       ]
     }
   ],

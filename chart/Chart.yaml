@@ -1,0 +1,15 @@
+apiVersion: v2
+name: airflow-platform
+description: >-
+  Apache Airflow with Keycloak SSO and per-team DAG isolation, for local
+  kind development. Wraps the upstream apache-airflow/airflow chart (mirrored
+  to Docker Hub as an OCI artifact, see CHART_OCI_REPO in the Makefile) as a
+  dependency so it deploys as a single Helm release together with the local
+  team-roles-job subchart (charts/team-roles-job/), whose post-install/
+  post-upgrade hook creates the team roles and applies each DAG's
+  access_control.
+version: 0.1.0
+dependencies:
+  - name: airflow
+    version: 1.22.0
+    repository: oci://registry-1.docker.io/isliao613

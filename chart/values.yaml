@@ -1,0 +1,178 @@
+# Values for this repo's own umbrella chart (Chart.yaml), which wraps the
+# apache-airflow/airflow chart 1.22.0 as a dependency (mirrored to Docker Hub
+# as an OCI artifact, see CHART_OCI_REPO in the Makefile) so it deploys as a
+# single Helm release together with charts/team-roles-job/. Overrides for the
+# airflow subchart go under the `airflow:` key below -- that's Helm's own
+# convention for addressing a dependency's values, matching the dependency's
+# `name:` in Chart.yaml. Exposes the API server via the kind cluster's
+# NodePort 30080 -> host port 8080 (see kind-config.yaml).
+#
+# The Airflow version and image below are placeholder tokens, not literal
+# values -- `make deploy` runs this file through `sed` (see RENDERED_VALUES
+# in the Makefile) to substitute them from AIRFLOW_VERSION / IMAGE_REPO /
+# IMAGE_TAG, its single source of truth, so the image that `make build`
+# produces is always the image the pods run and never has to be kept in sync
+# by hand in two places. team-roles-job.image below is filled in from the
+# same two Makefile variables, since that Job must run the identical image.
+#
+# Consequence: installing this file with plain `helm` instead of `make
+# deploy` installs these placeholder strings as literal, broken values --
+# always go through `make deploy` (or `make dep-build` + manually sed the
+# file the same way, if you need to call `helm upgrade` directly).
+
+airflow:
+  airflowVersion: AIRFLOW_VERSION_PLACEHOLDER
+  defaultAirflowRepository: IMAGE_REPO_PLACEHOLDER
+  defaultAirflowTag: IMAGE_TAG_PLACEHOLDER
+
+  executor: "CeleryExecutor"
+
+  # Chart 1.22.0 renders the api secret as an ordinary resource with a
+  # `randAlphaNum 32` default, so every `helm upgrade` -- which is what
+  # `make deploy` runs -- would mint a new key while the running pods keep the
+  # old one in their env, silently invalidating sessions on the next restart.
+  # (The fernet key is not affected: its template is a pre-install hook.)
+  # Pinning it makes re-deploys idempotent. Local-only value.
+  apiSecretKey: "airflow-local-dev-api-secret-key"
+
+  # Chart 1.22.0's migration job runs only `airflow db migrate`. The FAB auth
+  # manager keeps its own alembic history (users, roles, permissions) that is
+  # migrated by `airflow fab-db migrate`, and nothing in the chart runs it.
+  # Since this deployment authenticates through FAB, run both here. Both are
+  # idempotent.
+  migrateDatabaseJob:
+    args:
+      - "bash"
+      - "-c"
+      - "airflow db migrate && airflow fab-db migrate"
+
+  # The chart's default createUserJob mints a local admin/admin. Under
+  # AUTH_TYPE = AUTH_OAUTH the login form is gone, so that user can never sign
+  # in and only adds a confusing failure mode. Identities come from Keycloak.
+  createUserJob:
+    enabled: false
+
+  apiServer:
+    service:
+      type: NodePort
+      ports:
+        - name: api-server
+          port: 8080
+          targetPort: 8080
+          nodePort: 30080
+
+    # Flask-AppBuilder config for Keycloak SSO. Rendered through Helm's `tpl`
+    # (see chart templates/configmaps/api-server-configmap.yaml) and mounted
+    # at /opt/airflow/webserver_config.py -- safe because this file has no
+    # `{{ }}` Go-template syntax, only Python's own `{}` dict/f-string
+    # literals, which `tpl` ignores.
+    #
+    # Also referenced below as webserver.webserverConfig (same anchor, no
+    # copy-paste): the api-server component reads apiServer.apiServerConfig,
+    # but scheduler/worker/triggerer/dag-processor all still mount
+    # webserver.webserverConfig instead -- an Airflow-3 chart quirk from
+    # splitting the webserver into api-server without updating every
+    # component's config-mount key. Every component needs the same
+    # AUTH_ROLES_MAPPING to authorize consistently, so both must be set.
+    #
+    # Roles come from Keycloak groups, not from Airflow:
+    # AUTH_ROLES_SYNC_AT_LOGIN re-reads the `groups` claim on every login and
+    # rewrites the user's roles, so group membership in Keycloak is the
+    # single source of truth. The team roles themselves are created by
+    # `airflow roles import` (see charts/team-roles-job/files/roles.json) and
+    # deliberately hold no global `DAGs` permission -- per-DAG access is
+    # granted only by the `access_control` mapping in each DAG file.
+    apiServerConfig: &webserverConfig |
+      from __future__ import annotations
+
+      import os
+
+      from flask_appbuilder.security.manager import AUTH_OAUTH
+
+      # Keycloak is reached at the same URL from the browser and from this pod
+      # (via the socat sidecar), so the issuer in the tokens lines up on both
+      # sides.
+      KEYCLOAK_BASE_URL = os.environ.get("AIRFLOW_KEYCLOAK_BASE_URL", "http://localhost:8181")
+      KEYCLOAK_REALM = os.environ.get("AIRFLOW_KEYCLOAK_REALM", "airflow")
+      _REALM_URL = f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
+
+      AUTH_TYPE = AUTH_OAUTH
+
+      # First OAuth login creates the Airflow user. Public grants nothing on its
+      # own; anyone not in one of the three groups below lands here and sees no
+      # DAGs.
+      AUTH_USER_REGISTRATION = True
+      AUTH_USER_REGISTRATION_ROLE = "Public"
+      AUTH_ROLES_SYNC_AT_LOGIN = True
+
+      AUTH_ROLES_MAPPING = {
+          "airflow-team-a": ["team_a"],
+          "airflow-team-b": ["team_b"],
+          "airflow-team-c": ["team_c"],
+          # Built-in role -- needs no entry in chart/files/roles.json. Holds
+          # global `DAGs` permission, so this group sees every team's DAG.
+          "airflow-admins": ["Admin"],
+      }
+
+      OAUTH_PROVIDERS = [
+          {
+              # The name "keycloak" is significant: Flask-AppBuilder ships a
+              # handler for it that reads the userinfo endpoint and maps the
+              # `groups` claim onto role_keys, which is what AUTH_ROLES_MAPPING
+              # consumes.
+              "name": "keycloak",
+              "icon": "fa-key",
+              "token_key": "access_token",
+              "remote_app": {
+                  "client_id": os.environ.get("AIRFLOW_KEYCLOAK_CLIENT_ID", "airflow"),
+                  "client_secret": os.environ.get(
+                      "AIRFLOW_KEYCLOAK_CLIENT_SECRET", "airflow-local-dev-secret"
+                  ),
+                  "server_metadata_url": f"{_REALM_URL}/.well-known/openid-configuration",
+                  # FAB appends "openid-connect/userinfo" to this base.
+                  "api_base_url": f"{_REALM_URL}/protocol/",
+                  "client_kwargs": {"scope": "openid email profile"},
+              },
+          }
+      ]
+
+    # Publishes Keycloak inside the api-server pod at the exact URL the
+    # browser uses (http://localhost:8181), so the OIDC issuer matches on
+    # both sides. Without this the browser would need a cluster-internal
+    # hostname, or Airflow a host-side one, and the issuer check would fail
+    # either way.
+    #
+    # Runs the Airflow image itself (already loaded into kind, with socat
+    # installed by the Dockerfile) to avoid pulling a second image just to
+    # forward a port. `.image` is overridden from the Makefile.
+    extraContainers:
+      - name: keycloak-proxy
+        image: PLACEHOLDER_SET_FROM_MAKEFILE
+        command: ["socat"]
+        args:
+          - "TCP-LISTEN:8181,fork,reuseaddr"
+          - "TCP:airflow-keycloak:8080"
+        ports:
+          - name: keycloak
+            containerPort: 8181
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
+
+  # scheduler/worker/triggerer/dag-processor mount webserver_config.py via
+  # this key, not apiServer.apiServerConfig (see the comment on that key
+  # above) -- the YAML anchor keeps both in lockstep from one definition.
+  webserver:
+    webserverConfig: *webserverConfig
+
+# Image for this chart's own templates/sync-team-roles-job.yaml (the hook
+# Job that creates the team roles and applies each DAG's access_control). Not
+# under the `airflow:` key since this Job isn't part of the airflow
+# dependency -- but it invokes the `airflow` CLI directly, so it must run the
+# SAME image, hence the same Makefile placeholder tokens as above.
+image:
+  repository: IMAGE_REPO_PLACEHOLDER
+  tag: IMAGE_TAG_PLACEHOLDER
