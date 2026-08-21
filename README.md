@@ -26,7 +26,7 @@ OCI mirror, and then creates the team roles and applies each DAG's
 The image build is the slowest step and the one most likely to fail first: it
 pulls the `apache/airflow:3.3.0` base image, applies OS updates, and installs a
 patched `litellm`. What gets deployed is that locally built
-`isliao613/airflow:3.3.0-hardened.2`, **not** upstream `apache/airflow:3.3.0`
+`isliao613/airflow:3.3.0-hardened.1`, **not** upstream `apache/airflow:3.3.0`
 directly -- see `Dockerfile` for what is patched and why.
 
 | Service          | URL                     | Credentials                       |
@@ -190,7 +190,7 @@ the global `DAGs` permission.
 spec all derive from them. So picking up a new CVE fix is a one-line change:
 
 1. Edit the `Dockerfile`.
-2. Bump the revision suffix in `IMAGE_TAG` (`3.3.0-hardened.2` -> `.3`).
+2. Bump the revision suffix in `IMAGE_TAG` (`3.3.0-hardened.1` -> `.2`).
 3. `make up`
 
 Don't hardcode the image in `values.yaml`. The Airflow image is overridden with

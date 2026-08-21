@@ -15,7 +15,7 @@ AIRFLOW_VERSION := 3.3.0
 # one the pods actually run can't drift apart. Bump the revision suffix
 # (.1, .2, ...) each time the Dockerfile picks up a new CVE fix.
 IMAGE_REPO      := isliao613/airflow
-IMAGE_TAG       := 3.3.0-hardened.2
+IMAGE_TAG       := 3.3.0-hardened.1
 IMAGE           := $(IMAGE_REPO):$(IMAGE_TAG)
 KEYCLOAK_IMAGE  := keycloak/keycloak:26.7.2
 KIND_CONFIG     := kind-config.yaml
