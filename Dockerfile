@@ -13,7 +13,7 @@ FROM apache/airflow:3.3.0
 # tag rebuilt later can contain different package versions. Bump IMAGE_TAG in
 # the Makefile whenever you want a rebuild to be distinguishable.
 #
-# socat backs the api-server sidecar that publishes Keycloak on 127.0.0.1:8081
+# socat backs the api-server sidecar that publishes Keycloak on 127.0.0.1:8181
 # inside the pod (see apiServer.extraContainers in values.yaml). Installing it
 # here avoids pulling a second image into the kind cluster just to proxy a port.
 USER root
@@ -39,7 +39,9 @@ RUN pip install --no-cache-dir "litellm==1.95.0" \
     && pip check
 
 # --- Platform content -------------------------------------------------------
-# DAGs and the SSO config ship in the image, so the cluster needs no DAG volume,
-# no gitSync, and no registry: `make load` side-loads the lot into kind.
+# DAGs ship in the image, so the cluster needs no DAG volume, no gitSync, and
+# no registry: `make load` side-loads them into kind. The SSO config
+# (webserver_config.py) is NOT baked in here -- it's set via
+# apiServer.apiServerConfig / webserver.webserverConfig in values.yaml
+# instead, so editing it only needs `make deploy`, not a full image rebuild.
 COPY --chown=airflow:root dags/ /opt/airflow/dags/
-COPY --chown=airflow:root airflow/webserver_config.py /opt/airflow/webserver_config.py

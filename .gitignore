@@ -1,5 +1,11 @@
-# Rendered by `make deploy` from values.yaml; regenerated every run.
+# Rendered by `make deploy` from chart/values.yaml; regenerated every run.
 .values.rendered.yaml
 
 # Pulled by `make chart-pull` for mirroring.
 airflow-*.tgz
+
+# Fetched by `make dep-build` (or `deploy`, which runs it) from the OCI
+# mirror per the `dependencies:` entry in chart/Chart.yaml. Regenerable.
+# chart/Chart.lock (NOT ignored) pins the resolved digest, same spirit as
+# pinning IMAGE_TAG -- commit it.
+/chart/charts/*.tgz

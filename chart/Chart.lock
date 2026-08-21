@@ -1,0 +1,6 @@
+dependencies:
+- name: airflow
+  repository: oci://registry-1.docker.io/isliao613
+  version: 1.22.0
+digest: sha256:3e751fcf3753135b5e1ca8aff81335ff593f98fba959220a7e0ba60ecf91c43d
+generated: "2026-08-21T10:59:06.271235671+08:00"

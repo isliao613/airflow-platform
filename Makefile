@@ -5,7 +5,11 @@ CHART_UPSTREAM_REPO := apache-airflow
 CHART_UPSTREAM_URL  := https://airflow.apache.org
 # Chart is mirrored to Docker Hub as an OCI artifact (see chart-push) so
 # `deploy` doesn't depend on the upstream chart repo being reachable. Bump
-# CHART_VERSION and re-run `make chart-push` to pick up a new chart release.
+# CHART_VERSION and re-run `make chart-push` to pick up a new chart release --
+# then also bump the matching `version:` under `dependencies:` in
+# chart/Chart.yaml and re-run `make dep-build` (deploy does this
+# automatically), since that's what actually pins the version `helm upgrade`
+# installs; CHART_VERSION here only drives chart-pull/chart-push.
 CHART_OCI_NAMESPACE := oci://registry-1.docker.io/isliao613
 CHART_OCI_REPO      := $(CHART_OCI_NAMESPACE)/airflow
 CHART_VERSION   := 1.22.0
@@ -19,16 +23,21 @@ IMAGE_TAG       := 3.3.0-hardened.1
 IMAGE           := $(IMAGE_REPO):$(IMAGE_TAG)
 KEYCLOAK_IMAGE  := keycloak/keycloak:26.7.2
 KIND_CONFIG     := kind-config.yaml
-VALUES_FILE     := values.yaml
+# This repo's umbrella chart (wraps the airflow chart as a dependency, plus
+# its own templates/ for the team-roles-job hook) lives in its own folder,
+# separate from the Dockerfile/dags/sso concerns at repo root.
+CHART_DIR       := chart
+VALUES_FILE     := $(CHART_DIR)/values.yaml
 REALM_FILE      := sso/realm-airflow.json
 KEYCLOAK_MANIFEST := sso/keycloak.yaml
-ROLES_FILE      := airflow/roles.json
-# values.yaml carries a placeholder for the sidecar image so it stays free of
-# hardcoded tags; `deploy` renders it from IMAGE. Done with sed rather than
-# `--set apiServer.extraContainers[0].image=...` because Helm replaces list
+# values.yaml carries placeholders (image, version, tags) so it stays free of
+# hardcoded values; `deploy` renders them all from Makefile variables in one
+# sed pass. Done with sed rather than `--set` so there's exactly one place
+# (this file) to look for what's actually deployed, and because the sidecar
+# image specifically can't be done with `--set` -- Helm replaces list
 # elements rather than merging into them, which would drop the rest of the
 # container spec. Kept on disk (gitignored) as a record of what was deployed.
-RENDERED_VALUES := .values.rendered.yaml
+RENDERED_VALUES := $(CHART_DIR)/.values.rendered.yaml
 
 # Every kubectl/helm call is pinned to the kind cluster's context. `kind create
 # cluster` switches the current context, but the "already exists" path below
@@ -38,10 +47,10 @@ KUBE_CONTEXT    := kind-$(CLUSTER_NAME)
 KUBECTL         := kubectl --context $(KUBE_CONTEXT)
 KUBENS          := $(KUBECTL) --namespace $(NAMESPACE)
 
-.PHONY: up down build load push deploy cluster cluster-down namespace sso sso-perms \
+.PHONY: up down build load push deploy dep-build cluster cluster-down namespace sso \
         status ui logs clean chart-pull chart-push whoami
 
-up: cluster sso deploy sso-perms ## Create the cluster, deploy Keycloak + Airflow, wire up permissions (one-click)
+up: cluster sso deploy ## Create the cluster, deploy Keycloak + Airflow, wire up permissions (one-click)
 
 down: clean ## Alias for clean
 
@@ -65,7 +74,7 @@ whoami: ## Show which cluster the targets will act on
 namespace: ## Ensure the airflow namespace exists
 	$(KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
 
-build: ## Build the CVE-hardened Airflow image (also bakes in dags/ and the SSO config)
+build: ## Build the CVE-hardened Airflow image (also bakes in dags/)
 	docker build -t $(IMAGE) .
 
 load: build ## Load the hardened image into the kind cluster
@@ -94,50 +103,39 @@ sso: namespace ## Deploy Keycloak and import the airflow realm
 	$(KUBENS) rollout restart deployment/airflow-keycloak
 	$(KUBENS) rollout status deployment/airflow-keycloak --timeout=5m
 
-deploy: load namespace ## Build, load, and install/upgrade Airflow via Helm (chart from Docker Hub OCI mirror)
-	# Note: no `--wait` here. The chart's DB-migration job is a post-install
-	# hook, but Helm's `--wait` blocks on the main Deployments/StatefulSets
-	# becoming Ready *before* running post-install hooks. Those pods'
-	# init-containers wait on the migration job to finish first, so
+dep-build: ## Fetch the airflow chart dependency into chart/charts/ (from the Docker Hub OCI mirror)
+	helm dependency build $(CHART_DIR)
+
+deploy: load namespace dep-build ## Build, load, and install/upgrade Airflow + the team-roles-job hook via Helm, as one release
+	# Note: no `--wait` here. The airflow subchart's DB-migration job is a
+	# post-install hook, but Helm's `--wait` blocks on the main Deployments/
+	# StatefulSets becoming Ready *before* running post-install hooks. Those
+	# pods' init-containers wait on the migration job to finish first, so
 	# `--wait` deadlocks. We wait explicitly afterward instead, once the
-	# migration hook has actually run.
-	sed 's|PLACEHOLDER_SET_FROM_MAKEFILE|$(IMAGE)|' $(VALUES_FILE) > $(RENDERED_VALUES)
-	helm upgrade --install $(RELEASE_NAME) $(CHART_OCI_REPO) \
+	# migration and team-roles hooks have actually run (Helm always blocks on
+	# hooks regardless of --wait, so by the time this command returns, the
+	# team-roles-job hook -- which creates the team roles and applies each
+	# DAG's access_control -- has already completed).
+	sed \
+		-e 's|PLACEHOLDER_SET_FROM_MAKEFILE|$(IMAGE)|' \
+		-e 's|AIRFLOW_VERSION_PLACEHOLDER|$(AIRFLOW_VERSION)|' \
+		-e 's|IMAGE_REPO_PLACEHOLDER|$(IMAGE_REPO)|g' \
+		-e 's|IMAGE_TAG_PLACEHOLDER|$(IMAGE_TAG)|g' \
+		$(VALUES_FILE) > $(RENDERED_VALUES)
+	helm upgrade --install $(RELEASE_NAME) $(CHART_DIR) \
 		--kube-context $(KUBE_CONTEXT) \
 		--namespace $(NAMESPACE) \
-		--version $(CHART_VERSION) \
 		-f $(RENDERED_VALUES) \
-		--set airflowVersion=$(AIRFLOW_VERSION) \
-		--set defaultAirflowRepository=$(IMAGE_REPO) \
-		--set defaultAirflowTag=$(IMAGE_TAG) \
 		--timeout 15m
 	$(KUBENS) rollout status deployment/$(RELEASE_NAME)-api-server --timeout=5m
 	$(KUBENS) rollout status deployment/$(RELEASE_NAME)-scheduler --timeout=5m
 	$(KUBENS) rollout status deployment/$(RELEASE_NAME)-dag-processor --timeout=5m
 	$(KUBENS) rollout status statefulset/$(RELEASE_NAME)-triggerer --timeout=5m
 	$(KUBENS) rollout status statefulset/$(RELEASE_NAME)-worker --timeout=5m
-
-sso-perms: ## Create the team roles and apply each DAG's access_control
-	@# `airflow sync-perm --include-dags` reads access_control off the DAGs
-	@# serialized in the database, so the dag processor has to have parsed
-	@# dags/ first. Poll for that rather than guessing a sleep duration.
-	@echo "waiting for the dag processor to serialize the team DAGs..."
-	@pod=$$($(KUBENS) get pod -l component=api-server -o jsonpath='{.items[0].metadata.name}'); \
-	for i in $$(seq 1 60); do \
-		found=$$($(KUBENS) exec $$pod -c api-server -- airflow dags list -o plain 2>/dev/null | grep -c '^team_[abc]_pipeline' || true); \
-		if [ "$$found" -ge 3 ]; then echo "all 3 team DAGs serialized"; break; fi; \
-		if [ "$$i" = "60" ]; then echo "ERROR: team DAGs did not appear within 5m"; exit 1; fi; \
-		sleep 5; \
-	done; \
-	echo "creating team roles..."; \
-	$(KUBENS) cp $(ROLES_FILE) $$pod:/tmp/roles.json -c api-server; \
-	$(KUBENS) exec $$pod -c api-server -- airflow roles import /tmp/roles.json; \
-	echo "applying per-DAG access_control..."; \
-	$(KUBENS) exec $$pod -c api-server -- airflow sync-perm --include-dags
 	@echo ""
 	@echo "Airflow $(AIRFLOW_VERSION) is up with Keycloak SSO."
 	@echo "  Airflow UI:       http://localhost:8080  (Sign in with keycloak)"
-	@echo "  Keycloak console: http://localhost:8081  (admin/admin)"
+	@echo "  Keycloak console: http://localhost:8181  (admin/admin)"
 	@echo ""
 	@echo "  alice / alice -> airflow-team-a -> sees team_a_pipeline only"
 	@echo "  bob   / bob   -> airflow-team-b -> sees team_b_pipeline only"
@@ -151,7 +149,7 @@ logs: ## Tail scheduler logs
 
 ui: ## Print the UI URLs
 	@echo "Airflow:  http://localhost:8080"
-	@echo "Keycloak: http://localhost:8081"
+	@echo "Keycloak: http://localhost:8181"
 
 clean: ## Uninstall Airflow and delete the kind cluster
 	@# Leading `-`: a broken or already-gone cluster must not stop the cluster
