@@ -109,6 +109,9 @@ airflow:
           "airflow-team-a": ["team_a"],
           "airflow-team-b": ["team_b"],
           "airflow-team-c": ["team_c"],
+          # Built-in role -- needs no entry in chart/files/roles.json. Holds
+          # global `DAGs` permission, so this group sees every team's DAG.
+          "airflow-admins": ["Admin"],
       }
 
       OAUTH_PROVIDERS = [

@@ -39,13 +39,16 @@ directly -- see `Dockerfile` for what is patched and why.
 ## SSO and per-team DAG isolation
 
 Identities live in Keycloak, not in Airflow. Three groups map to three Airflow
-roles, and each role can see exactly one DAG:
+roles, and each role can see exactly one DAG; a fourth group maps to the
+built-in `Admin` role, which sees every DAG and can manage users, roles,
+connections, and variables:
 
-| Keycloak user | Password | Keycloak group    | Airflow role | Visible DAG        |
-|---------------|----------|-------------------|--------------|--------------------|
-| `alice`       | `alice`  | `airflow-team-a`  | `team_a`     | `team_a_pipeline`  |
-| `bob`         | `bob`    | `airflow-team-b`  | `team_b`     | `team_b_pipeline`  |
-| `carol`       | `carol`  | `airflow-team-c`  | `team_c`     | `team_c_pipeline`  |
+| Keycloak user | Password | Keycloak group    | Airflow role | Visible DAG(s)      |
+|---------------|----------|-------------------|--------------|----------------------|
+| `alice`       | `alice`  | `airflow-team-a`  | `team_a`     | `team_a_pipeline`    |
+| `bob`         | `bob`    | `airflow-team-b`  | `team_b`     | `team_b_pipeline`    |
+| `carol`       | `carol`  | `airflow-team-c`  | `team_c`     | `team_c_pipeline`    |
+| `admin`       | `admin`  | `airflow-admins`  | `Admin`      | all three            |
 
 Signing in as `alice` shows one DAG. `team_b_pipeline` and `team_c_pipeline` are
 absent from the DAG list, and navigating to their URLs directly returns 403.
@@ -131,25 +134,27 @@ Airflow image itself (already in the cluster, with `socat` added by the
 Changing the host port means changing it in three places: `kind-config.yaml`,
 `KC_HOSTNAME` in `sso/keycloak.yaml`, and the sidecar in `chart/values.yaml`.
 
-### There is no Airflow admin
+### The admin group
 
-The three groups above are the only identities, by design, and none of them
-maps to Airflow's `Admin` role -- so nobody can manage Airflow's users, roles,
-connections, or variables through the UI. Manage identities in the Keycloak
-console instead.
-
-To add an admin, create a fourth Keycloak group and map it in the
-`webserver_config.py` embedded in `chart/values.yaml`:
+`airflow-admins` is the one group that maps to a built-in role instead of a
+per-team one:
 
 ```python
+# webserver_config.py, embedded in chart/values.yaml
 AUTH_ROLES_MAPPING = {
-    "airflow-admins": ["Admin"],
+    "airflow-team-a": ["team_a"],
     ...
+    "airflow-admins": ["Admin"],
 }
 ```
 
-`Admin` is a built-in role, so it needs no entry in `chart/files/roles.json`
--- but note it holds global `DAGs` permission and therefore sees every DAG.
+`Admin` needs no entry in `chart/files/roles.json` -- it's built into FAB
+already, with every permission on every resource. That's also the caveat:
+unlike the team roles, `Admin` holds the global `DAGs` permission, so
+`admin`/`admin` sees and can edit every team's DAG, and can manage Airflow's
+users, roles, connections, and variables through the UI -- the one identity
+in this realm that isn't scoped to a single team. Manage Keycloak identities
+themselves (adding/removing users or groups) through the Keycloak console.
 
 ## Files
 
@@ -259,7 +264,8 @@ mirror, not the upstream chart repo, so it doesn't depend on
 ## Credentials
 
 Every credential in this repo is a hardcoded local-development value: the
-Keycloak admin, the three demo users, the OIDC client secret in
+Keycloak admin, the four demo users (including `admin`/`admin` for Airflow),
+the OIDC client secret in
 `sso/realm-airflow.json` and in the `webserver_config.py` embedded in
 `chart/values.yaml`, and `apiSecretKey` also in `chart/values.yaml`. They
 exist so `make up` needs no setup. Replace all of them before this is
