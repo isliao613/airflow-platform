@@ -1,19 +1,20 @@
 # Values for this repo's own umbrella chart (Chart.yaml), which wraps the
 # apache-airflow/airflow chart 1.22.0 as a dependency (mirrored to Docker Hub
 # as an OCI artifact, see CHART_OCI_REPO in the Makefile) so it deploys as a
-# single Helm release together with charts/team-roles-job/. Overrides for the
-# airflow subchart go under the `airflow:` key below -- that's Helm's own
-# convention for addressing a dependency's values, matching the dependency's
-# `name:` in Chart.yaml. Exposes the API server via the kind cluster's
-# NodePort 30080 -> host port 8080 (see kind-config.yaml).
+# single Helm release together with this chart's own templates/. Overrides
+# for the airflow subchart go under the `airflow:` key below -- that's Helm's
+# own convention for addressing a dependency's values, matching the
+# dependency's `name:` in Chart.yaml. Exposes the API server via the kind
+# cluster's NodePort 30080 -> host port 8080 (see kind-config.yaml).
 #
 # The Airflow version and image below are placeholder tokens, not literal
 # values -- `make deploy` runs this file through `sed` (see RENDERED_VALUES
 # in the Makefile) to substitute them from AIRFLOW_VERSION / IMAGE_REPO /
 # IMAGE_TAG, its single source of truth, so the image that `make build`
 # produces is always the image the pods run and never has to be kept in sync
-# by hand in two places. team-roles-job.image below is filled in from the
-# same two Makefile variables, since that Job must run the identical image.
+# by hand in two places. The top-level `image:` key at the bottom of this
+# file is filled in from the same two Makefile variables, since the
+# sync-team-roles Job must run the identical image.
 #
 # Consequence: installing this file with plain `helm` instead of `make
 # deploy` installs these placeholder strings as literal, broken values --
@@ -79,9 +80,9 @@ airflow:
     # AUTH_ROLES_SYNC_AT_LOGIN re-reads the `groups` claim on every login and
     # rewrites the user's roles, so group membership in Keycloak is the
     # single source of truth. The team roles themselves are created by
-    # `airflow roles import` (see charts/team-roles-job/files/roles.json) and
-    # deliberately hold no global `DAGs` permission -- per-DAG access is
-    # granted only by the `access_control` mapping in each DAG file.
+    # `airflow roles import` (see chart/files/roles.json) and deliberately
+    # hold no global `DAGs` permission -- per-DAG access is granted only by
+    # the `access_control` mapping in each DAG file.
     apiServerConfig: &webserverConfig |
       from __future__ import annotations
 
