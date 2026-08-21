@@ -1,0 +1,5 @@
+# Rendered by `make deploy` from values.yaml; regenerated every run.
+.values.rendered.yaml
+
+# Pulled by `make chart-pull` for mirroring.
+airflow-*.tgz
