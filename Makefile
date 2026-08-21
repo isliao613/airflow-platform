@@ -15,9 +15,10 @@ CHART_OCI_REPO      := $(CHART_OCI_NAMESPACE)/airflow
 CHART_VERSION   := 1.22.0
 AIRFLOW_VERSION := 3.3.0
 # Single source of truth for the image. `build`/`load` tag from these, and
-# `deploy` passes them to Helm with --set, so the image that gets built and the
-# one the pods actually run can't drift apart. Bump the revision suffix
-# (.1, .2, ...) each time the Dockerfile picks up a new CVE fix.
+# `deploy` renders them into the chart values (see RENDERED_VALUES below), so
+# the image that gets built and the one the pods actually run can't drift
+# apart. Bump the revision suffix (.1, .2, ...) each time the Dockerfile picks
+# up a new CVE fix.
 IMAGE_REPO      := isliao613/airflow
 IMAGE_TAG       := 3.3.0-hardened.1
 IMAGE           := $(IMAGE_REPO):$(IMAGE_TAG)
@@ -140,6 +141,7 @@ deploy: load namespace dep-build ## Build, load, and install/upgrade Airflow + t
 	@echo "  alice / alice -> airflow-team-a -> sees team_a_pipeline only"
 	@echo "  bob   / bob   -> airflow-team-b -> sees team_b_pipeline only"
 	@echo "  carol / carol -> airflow-team-c -> sees team_c_pipeline only"
+	@echo "  admin / admin -> airflow-admins -> sees all three (Airflow Admin)"
 
 status: ## Show pod status
 	$(KUBENS) get pods

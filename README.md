@@ -171,6 +171,7 @@ themselves (adding/removing users or groups) through the Keycloak console.
 | `chart/Chart.lock`          | Pins the resolved dependency digest; committed like a lockfile        |
 | `chart/values.yaml`         | Overrides for the `airflow` dependency (under the `airflow:` key): NodePort, pinned api secret, Keycloak sidecar, and the Flask-AppBuilder/Keycloak SSO config (`apiServer.apiServerConfig` / `webserver.webserverConfig`); also `image:` for this chart's own hook Job |
 | `chart/templates/sync-team-roles-job.yaml` | Post-install/post-upgrade hook Job that creates the team roles and applies each DAG's `access_control` |
+| `chart/templates/team-roles-configmap.yaml` | Ships `chart/files/roles.json` into the cluster for the hook Job to read |
 | `chart/files/roles.json`    | The three team roles, imported by `airflow roles import`             |
 
 ## Targets
