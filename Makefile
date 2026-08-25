@@ -23,6 +23,10 @@ IMAGE_REPO      := isliao613/airflow
 IMAGE_TAG       := 3.3.0-hardened.1
 IMAGE           := $(IMAGE_REPO):$(IMAGE_TAG)
 KEYCLOAK_IMAGE  := keycloak/keycloak:26.7.2
+# Dev-mode Vault holding this repo's local secret values (see
+# vault/seed-secrets.sh) instead of them being hardcoded in chart/values.yaml,
+# sso/keycloak.yaml, and sso/realm-airflow.json.
+VAULT_IMAGE     := hashicorp/vault:2.0.4
 KIND_CONFIG     := kind-config.yaml
 # This repo's umbrella chart (wraps the airflow chart as a dependency, plus
 # its own templates/ for the team-roles-job hook) lives in its own folder,
@@ -31,6 +35,7 @@ CHART_DIR       := chart
 VALUES_FILE     := $(CHART_DIR)/values.yaml
 REALM_FILE      := sso/realm-airflow.json
 KEYCLOAK_MANIFEST := sso/keycloak.yaml
+VAULT_MANIFEST  := vault/vault.yaml
 # values.yaml carries placeholders (image, version, tags) so it stays free of
 # hardcoded values; `deploy` renders them all from Makefile variables in one
 # sed pass. Done with sed rather than `--set` so there's exactly one place
@@ -39,6 +44,11 @@ KEYCLOAK_MANIFEST := sso/keycloak.yaml
 # elements rather than merging into them, which would drop the rest of the
 # container spec. Kept on disk (gitignored) as a record of what was deployed.
 RENDERED_VALUES := $(CHART_DIR)/.values.rendered.yaml
+# realm-airflow.json carries VAULT_*_PLACEHOLDER tokens (user passwords, OIDC
+# client secret) instead of literal values; vault/sync-secrets.sh renders
+# this file from what's seeded in Vault. Gitignored, regenerated every run,
+# same spirit as RENDERED_VALUES above.
+REALM_RENDERED  := sso/.realm-airflow.rendered.json
 
 # Every kubectl/helm call is pinned to the kind cluster's context. `kind create
 # cluster` switches the current context, but the "already exists" path below
@@ -48,7 +58,7 @@ KUBE_CONTEXT    := kind-$(CLUSTER_NAME)
 KUBECTL         := kubectl --context $(KUBE_CONTEXT)
 KUBENS          := $(KUBECTL) --namespace $(NAMESPACE)
 
-.PHONY: up down build load push deploy dep-build cluster cluster-down namespace sso \
+.PHONY: up down build load push deploy dep-build cluster cluster-down namespace sso vault \
         status ui logs clean chart-pull chart-push whoami
 
 up: cluster sso deploy ## Create the cluster, deploy Keycloak + Airflow, wire up permissions (one-click)
@@ -93,21 +103,38 @@ chart-push: chart-pull ## Mirror the chart to Docker Hub as an OCI artifact (run
 	helm push airflow-$(CHART_VERSION).tgz $(CHART_OCI_NAMESPACE)
 	rm -f airflow-$(CHART_VERSION).tgz
 
-sso: namespace ## Deploy Keycloak and import the airflow realm
+sso: namespace vault ## Deploy Keycloak and import the airflow realm
 	@# The realm travels as a ConfigMap rather than being baked into an image,
 	@# so editing sso/realm-airflow.json and re-running `make sso` is enough.
+	@# $(REALM_RENDERED) (not $(REALM_FILE) itself) is what actually gets
+	@# imported -- it's $(REALM_FILE) with its VAULT_*_PLACEHOLDER tokens
+	@# (user passwords, OIDC client secret) substituted from Vault by the
+	@# `vault` prerequisite above.
 	$(KUBENS) create configmap airflow-keycloak-realm \
-		--from-file=realm-airflow.json=$(REALM_FILE) \
+		--from-file=realm-airflow.json=$(REALM_RENDERED) \
 		--dry-run=client -o yaml | $(KUBECTL) apply -f -
 	sed 's|KEYCLOAK_IMAGE_PLACEHOLDER|$(KEYCLOAK_IMAGE)|' $(KEYCLOAK_MANIFEST) | $(KUBECTL) apply -f -
 	@# Restart on re-run so a changed realm ConfigMap is actually re-imported.
 	$(KUBENS) rollout restart deployment/airflow-keycloak
 	$(KUBENS) rollout status deployment/airflow-keycloak --timeout=5m
 
+vault: namespace ## Deploy Vault (dev mode), seed it, and sync secrets into Kubernetes Secrets + the rendered realm file
+	@# Dev-mode Vault has no state across pod restarts, so seed+sync always
+	@# re-run -- cheap, and necessary since `sso`/`deploy` can each run this
+	@# standalone (same reasoning as both depending on `namespace`).
+	sed 's|VAULT_IMAGE_PLACEHOLDER|$(VAULT_IMAGE)|' $(VAULT_MANIFEST) | $(KUBECTL) apply -f -
+	$(KUBENS) rollout status deployment/airflow-vault --timeout=2m
+	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) ./vault/seed-secrets.sh
+	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) REALM_FILE=$(REALM_FILE) REALM_RENDERED=$(REALM_RENDERED) ./vault/sync-secrets.sh
+
 dep-build: ## Fetch the airflow chart dependency into chart/charts/ (from the Docker Hub OCI mirror)
 	helm dependency build $(CHART_DIR)
 
-deploy: load namespace dep-build ## Build, load, and install/upgrade Airflow + the team-roles-job hook via Helm, as one release
+deploy: load namespace vault dep-build ## Build, load, and install/upgrade Airflow + the team-roles-job hook via Helm, as one release
+	# `vault` above ensures the airflow-oidc-client-secret and
+	# airflow-api-secret-key Kubernetes Secrets exist -- chart/values.yaml
+	# references them via `secret:` / apiSecretKeySecretName rather than
+	# literal values.
 	# Note: no `--wait` here. The airflow subchart's DB-migration job is a
 	# post-install hook, but Helm's `--wait` blocks on the main Deployments/
 	# StatefulSets becoming Ready *before* running post-install hooks. Those

@@ -1,0 +1,82 @@
+# Vault for local secret storage, deployed alongside Keycloak and Airflow in
+# the same namespace. Dev mode (in-memory storage, auto-unsealed, a `secret/`
+# KV v2 mount created for free) -- this is a `kind` dev platform, not
+# somewhere Vault needs to survive a restart. vault/seed-secrets.sh re-seeds
+# it from scratch every time `make vault` runs, same spirit as `make sso`
+# always re-importing the Keycloak realm.
+#
+# Nothing outside this pod needs to reach Vault over the network: the
+# Makefile talks to it via `kubectl exec` (see vault/seed-secrets.sh and
+# vault/sync-secrets.sh), which attaches directly into the pod's network
+# namespace, so VAULT_ADDR pointing at 127.0.0.1 is enough. The Service
+# below exists for convenience (`kubectl port-forward svc/airflow-vault
+# 8200:8200` to browse the UI), not because anything depends on it.
+#
+# VAULT_DEV_ROOT_TOKEN_ID is the one credential in this repo that
+# structurally cannot live in Vault itself -- it's what authenticates to
+# Vault in the first place. Everything it unlocks (Keycloak admin, the OIDC
+# client secret, the API secret key, the demo user passwords) does live in
+# Vault; see vault/seed-secrets.sh for that single source of truth.
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-vault
+  namespace: airflow
+  labels:
+    app: airflow-vault
+spec:
+  type: ClusterIP
+  selector:
+    app: airflow-vault
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-vault
+  namespace: airflow
+  labels:
+    app: airflow-vault
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-vault
+  template:
+    metadata:
+      labels:
+        app: airflow-vault
+    spec:
+      containers:
+        - name: vault
+          image: VAULT_IMAGE_PLACEHOLDER
+          args: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+          env:
+            - name: VAULT_DEV_ROOT_TOKEN_ID
+              value: "airflow-local-dev-root-token"
+            # Makes the `vault` CLI usable via plain `kubectl exec ... --
+            # vault kv ...`, with no `-address`/`login` step, from inside the
+            # pod's own network namespace.
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+            - name: VAULT_TOKEN
+              value: "airflow-local-dev-root-token"
+          ports:
+            - name: http
+              containerPort: 8200
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 40
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi

@@ -116,7 +116,7 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": true,
       "clientAuthenticatorType": "client-secret",
-      "secret": "airflow-local-dev-secret",
+      "secret": "VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER",
       "redirectUris": [
         "http://localhost:8080/*"
       ],

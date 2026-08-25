@@ -1,7 +1,12 @@
 # Keycloak for local SSO, deployed alongside Airflow in the same namespace.
 #
 # The realm (groups, users, Airflow client) is imported at startup from the
-# ConfigMap that `make sso` generates out of sso/realm-airflow.json.
+# ConfigMap that `make sso` generates out of sso/realm-airflow.json, rendered
+# through vault/sync-secrets.sh so the OIDC client secret comes from Vault
+# (see vault/seed-secrets.sh) instead of being literal in that file. The four
+# users' own passwords stay literal in sso/realm-airflow.json -- Vault here
+# only holds secrets Airflow itself needs to function, not human login
+# passwords.
 #
 # URL consistency matters here: OIDC tokens carry an issuer, and the browser and
 # the Airflow API server must agree on it. Both therefore reach Keycloak at
@@ -50,7 +55,10 @@ spec:
           args: ["start-dev", "--import-realm"]
           env:
             # Dev-mode admin for the Keycloak console itself (http://localhost:8181).
-            # Unrelated to the three Airflow users in the imported realm.
+            # Unrelated to the three Airflow users in the imported realm. Not
+            # sourced from Vault -- it's a login for a human operator, not an
+            # Airflow-side secret, so it stays a plain local-dev literal (see
+            # vault/seed-secrets.sh for what IS in Vault and why).
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               value: "admin"
             - name: KC_BOOTSTRAP_ADMIN_PASSWORD

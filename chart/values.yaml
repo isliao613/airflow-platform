@@ -33,8 +33,31 @@ airflow:
   # `make deploy` runs -- would mint a new key while the running pods keep the
   # old one in their env, silently invalidating sessions on the next restart.
   # (The fernet key is not affected: its template is a pre-install hook.)
-  # Pinning it makes re-deploys idempotent. Local-only value.
-  apiSecretKey: "airflow-local-dev-api-secret-key"
+  # Pointing at an existing Secret (rather than the literal `apiSecretKey`
+  # value) makes re-deploys idempotent the same way, while sourcing the
+  # actual value from Vault: vault/sync-secrets.sh materializes this Secret
+  # from secret/airflow-platform/api-secret-key (see vault/seed-secrets.sh).
+  #
+  # Named `vault-api-secret-key`, NOT e.g. `airflow-api-secret-key`: that
+  # would collide with the name the chart's own api-secret-key-secret.yaml
+  # template renders when apiSecretKeySecretName is unset, and `helm upgrade`
+  # garbage-collects same-named resources that drop out of the chart's
+  # manifest between releases -- it deleted this Secret out from under
+  # already-upgraded pods the first time this was tried with an
+  # `airflow-`-prefixed name.
+  apiSecretKeySecretName: "vault-api-secret-key"
+
+  # Exposes AIRFLOW_KEYCLOAK_CLIENT_SECRET (read by apiServerConfig below) as
+  # an env var on every Airflow container, sourced from the Secret
+  # vault/sync-secrets.sh materializes from secret/airflow-platform/oidc-client
+  # -- the same value Keycloak's own client is configured with (see
+  # sso/realm-airflow.json's VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER). Named
+  # `vault-oidc-client-secret` for the same collision-avoidance reason as
+  # apiSecretKeySecretName above.
+  secret:
+    - envName: "AIRFLOW_KEYCLOAK_CLIENT_SECRET"
+      secretName: "vault-oidc-client-secret"
+      secretKey: "client-secret"
 
   # Chart 1.22.0's migration job runs only `airflow db migrate`. The FAB auth
   # manager keeps its own alembic history (users, roles, permissions) that is
@@ -126,9 +149,11 @@ airflow:
               "token_key": "access_token",
               "remote_app": {
                   "client_id": os.environ.get("AIRFLOW_KEYCLOAK_CLIENT_ID", "airflow"),
-                  "client_secret": os.environ.get(
-                      "AIRFLOW_KEYCLOAK_CLIENT_SECRET", "airflow-local-dev-secret"
-                  ),
+                  # No fallback default here on purpose: this comes from
+                  # Vault (see the top-level `secret:` list below), and a
+                  # missing env var should fail loudly rather than silently
+                  # authenticating against a stale hardcoded value.
+                  "client_secret": os.environ["AIRFLOW_KEYCLOAK_CLIENT_SECRET"],
                   "server_metadata_url": f"{_REALM_URL}/.well-known/openid-configuration",
                   # FAB appends "openid-connect/userinfo" to this base.
                   "api_base_url": f"{_REALM_URL}/protocol/",
