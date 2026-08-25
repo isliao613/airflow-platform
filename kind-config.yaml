@@ -14,3 +14,9 @@ nodes:
       - containerPort: 30081
         hostPort: 8181
         protocol: TCP
+      # Vault UI/API, for manual browsing only (nothing automated needs this
+      # -- vault/seed-secrets.sh and vault/sync-secrets.sh talk to Vault via
+      # `kubectl exec`, not over this port). See vault/vault.yaml.
+      - containerPort: 30082
+        hostPort: 8200
+        protocol: TCP
