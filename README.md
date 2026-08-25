@@ -37,6 +37,7 @@ directly -- see `Dockerfile` for what is patched and why.
 |------------------|-------------------------|-----------------------------------|
 | Airflow UI       | http://localhost:8080   | "Sign in with keycloak"           |
 | Keycloak console | http://localhost:8181   | `admin` / `admin`                 |
+| Vault UI         | http://localhost:8200   | Root token: `airflow-local-dev-root-token` |
 
 ## SSO and per-team DAG isolation
 
@@ -195,9 +196,11 @@ restarts, so `make vault` always re-seeds and re-syncs from scratch (same
 spirit as `make sso` always re-importing the realm). `VAULT_DEV_ROOT_TOKEN_ID`
 in `vault/vault.yaml` is the one credential that structurally can't live
 inside Vault itself, since it's what authenticates to Vault in the first
-place; the Makefile talks to Vault via `kubectl exec` into its pod (see
-`vault/seed-secrets.sh`), not over the network, so nothing outside the
-cluster needs it.
+place. Nothing automated needs it over the network -- the Makefile talks to
+Vault via `kubectl exec` into its pod (see `vault/seed-secrets.sh`) -- but
+the Service is still exposed as a NodePort at http://localhost:8200 (see
+`kind-config.yaml`'s third `extraPortMapping`), same as Keycloak's console,
+purely so you can browse the Vault UI directly.
 
 To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 `make sso`/`make deploy`, which both depend on it).
@@ -206,7 +209,7 @@ To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 
 | File                        | Purpose                                                              |
 |-----------------------------|----------------------------------------------------------------------|
-| `kind-config.yaml`          | Single-node kind cluster; NodePorts `30080`/`30081` -> host `8080`/`8181` |
+| `kind-config.yaml`          | Single-node kind cluster; NodePorts `30080`/`30081`/`30082` -> host `8080`/`8181`/`8200` |
 | `Dockerfile`                | CVE-hardened image; bakes in `dags/`                                 |
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
 | `dags/`                     | Three demo DAGs, one per team, each with `access_control`            |

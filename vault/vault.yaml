@@ -5,18 +5,21 @@
 # it from scratch every time `make vault` runs, same spirit as `make sso`
 # always re-importing the Keycloak realm.
 #
-# Nothing outside this pod needs to reach Vault over the network: the
-# Makefile talks to it via `kubectl exec` (see vault/seed-secrets.sh and
-# vault/sync-secrets.sh), which attaches directly into the pod's network
-# namespace, so VAULT_ADDR pointing at 127.0.0.1 is enough. The Service
-# below exists for convenience (`kubectl port-forward svc/airflow-vault
-# 8200:8200` to browse the UI), not because anything depends on it.
+# Nothing automated reaches Vault over the network: the Makefile talks to it
+# via `kubectl exec` (see vault/seed-secrets.sh and vault/sync-secrets.sh),
+# which attaches directly into the pod's own network namespace, so
+# VAULT_ADDR pointing at 127.0.0.1 is enough. The NodePort below exists
+# purely so a human can browse the UI at http://localhost:8200, same as
+# Keycloak's console at :8181 -- see kind-config.yaml for the matching
+# extraPortMapping.
 #
 # VAULT_DEV_ROOT_TOKEN_ID is the one credential in this repo that
 # structurally cannot live in Vault itself -- it's what authenticates to
-# Vault in the first place. Everything it unlocks (Keycloak admin, the OIDC
-# client secret, the API secret key, the demo user passwords) does live in
-# Vault; see vault/seed-secrets.sh for that single source of truth.
+# Vault in the first place. What it unlocks (the OIDC client secret and the
+# API secret key -- see vault/seed-secrets.sh for that single source of
+# truth) does live in Vault. Note this token is also now reachable from the
+# host at localhost:8200: fine for a throwaway local `kind` cluster, but not
+# a pattern to carry into anything internet-facing.
 apiVersion: v1
 kind: Service
 metadata:
@@ -25,13 +28,14 @@ metadata:
   labels:
     app: airflow-vault
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: airflow-vault
   ports:
     - name: http
       port: 8200
       targetPort: 8200
+      nodePort: 30082
 ---
 apiVersion: apps/v1
 kind: Deployment
