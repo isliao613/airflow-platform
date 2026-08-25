@@ -16,14 +16,16 @@ One-click local deployment of Apache Airflow 3.3.0 (Helm chart 1.22.0) on a
 make up
 ```
 
-This creates the `airflow` kind cluster, deploys Keycloak and imports the
-`airflow` realm, builds the CVE-hardened Airflow image from the `Dockerfile`,
-loads it into the cluster with `kind load` (no registry push needed), and
-installs `chart/` -- this repo's own umbrella Helm chart, which wraps the
-`apache-airflow/airflow` chart (pinned to `1.22.0`, from a Docker Hub OCI
-mirror) as a dependency, plus its own `templates/sync-team-roles-job.yaml` --
-a post-install/post-upgrade hook Job that creates the team roles and applies
-each DAG's `access_control` once the release installs.
+This creates the `airflow` kind cluster, deploys a dev-mode Vault and seeds it
+with this repo's local secret values, deploys Keycloak and imports the
+`airflow` realm (rendered from those Vault-backed secrets), builds the
+CVE-hardened Airflow image from the `Dockerfile`, loads it into the cluster
+with `kind load` (no registry push needed), and installs `chart/` -- this
+repo's own umbrella Helm chart, which wraps the `apache-airflow/airflow`
+chart (pinned to `1.22.0`, from a Docker Hub OCI mirror) as a dependency,
+plus its own `templates/sync-team-roles-job.yaml` -- a post-install/
+post-upgrade hook Job that creates the team roles and applies each DAG's
+`access_control` once the release installs.
 
 The image build is the slowest step and the one most likely to fail first: it
 pulls the `apache/airflow:3.3.0` base image, applies OS updates, and installs a
@@ -156,6 +158,50 @@ users, roles, connections, and variables through the UI -- the one identity
 in this realm that isn't scoped to a single team. Manage Keycloak identities
 themselves (adding/removing users or groups) through the Keycloak console.
 
+## Secrets in Vault
+
+The secrets Airflow itself needs to function -- the OIDC client secret and
+Airflow's API secret key -- live in a dev-mode Vault (`vault/vault.yaml`)
+instead of being a literal value in tracked chart/SSO YAML.
+`vault/seed-secrets.sh` is the single source of truth for the actual VALUES
+(still hardcoded local-dev values, just centralized in one file instead of
+scattered across two); `vault/sync-secrets.sh` reads them back out and:
+
+- Creates two Kubernetes Secrets -- `vault-oidc-client-secret`,
+  `vault-api-secret-key` -- consumed via the airflow chart's own
+  `apiSecretKeySecretName` / top-level `secret:` list (`chart/values.yaml`),
+  the same mechanism the chart already uses for its own metadata/fernet-key
+  secrets. Named `vault-*` and deliberately not `airflow-*`: a Secret sharing
+  a name the chart itself would ever render (e.g. `airflow-api-secret-key`)
+  gets garbage-collected by `helm upgrade` the moment that name drops out of
+  the chart's rendered manifest, taking our Vault-sourced Secret down with
+  it -- hit this for real switching `apiSecretKey` to
+  `apiSecretKeySecretName`.
+- Renders `sso/.realm-airflow.rendered.json` from `sso/realm-airflow.json`,
+  substituting its `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` token -- Keycloak's
+  realm import has no equivalent of `secretKeyRef`, so that value has to
+  land in the JSON itself. Gitignored and regenerated on every run, same as
+  `chart/.values.rendered.yaml`.
+
+Deliberately NOT in Vault: the Keycloak admin login (`sso/keycloak.yaml`)
+and the four demo users' passwords (`sso/realm-airflow.json`). Those are
+human login credentials, not secrets Airflow's own backend needs to
+function, so they stay plain literals -- Vault only holds what's actually
+Airflow-side here.
+
+Vault runs in dev mode: in-memory storage, auto-unsealed, with a `secret/`
+KV v2 mount created for free -- there's nothing here worth persisting across
+restarts, so `make vault` always re-seeds and re-syncs from scratch (same
+spirit as `make sso` always re-importing the realm). `VAULT_DEV_ROOT_TOKEN_ID`
+in `vault/vault.yaml` is the one credential that structurally can't live
+inside Vault itself, since it's what authenticates to Vault in the first
+place; the Makefile talks to Vault via `kubectl exec` into its pod (see
+`vault/seed-secrets.sh`), not over the network, so nothing outside the
+cluster needs it.
+
+To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
+`make sso`/`make deploy`, which both depend on it).
+
 ## Files
 
 | File                        | Purpose                                                              |
@@ -164,12 +210,15 @@ themselves (adding/removing users or groups) through the Keycloak console.
 | `Dockerfile`                | CVE-hardened image; bakes in `dags/`                                 |
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
 | `dags/`                     | Three demo DAGs, one per team, each with `access_control`            |
-| `sso/realm-airflow.json`    | Keycloak realm: 3 groups, 3 users, the `airflow` OIDC client         |
-| `sso/keycloak.yaml`         | Keycloak Deployment + Service                                        |
+| `sso/realm-airflow.json`    | Keycloak realm: 3 groups, 4 users, the `airflow` OIDC client -- carries a `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` token, filled in by `vault/sync-secrets.sh`; user passwords stay literal |
+| `sso/keycloak.yaml`         | Keycloak Deployment + Service; admin login stays a literal local-dev value |
+| `vault/vault.yaml`          | Dev-mode Vault Deployment + Service                                   |
+| `vault/seed-secrets.sh`     | Single source of truth for this repo's Airflow-side secret values; pushes them into Vault |
+| `vault/sync-secrets.sh`     | Reads secrets back out of Vault into Kubernetes Secrets and the rendered realm JSON |
 | `chart/`                    | This repo's own umbrella Helm chart -- deploys `airflow` (a dependency, pinned in `chart/Chart.yaml`) as one Helm release together with this chart's own templates |
 | `chart/Chart.yaml`          | Declares the `airflow` chart dependency (OCI mirror, pinned version) |
 | `chart/Chart.lock`          | Pins the resolved dependency digest; committed like a lockfile        |
-| `chart/values.yaml`         | Overrides for the `airflow` dependency (under the `airflow:` key): NodePort, pinned api secret, Keycloak sidecar, and the Flask-AppBuilder/Keycloak SSO config (`apiServer.apiServerConfig` / `webserver.webserverConfig`); also `image:` for this chart's own hook Job |
+| `chart/values.yaml`         | Overrides for the `airflow` dependency (under the `airflow:` key): NodePort, api secret sourced from Vault (`apiSecretKeySecretName`), Keycloak sidecar, and the Flask-AppBuilder/Keycloak SSO config (`apiServer.apiServerConfig` / `webserver.webserverConfig`); also `image:` for this chart's own hook Job |
 | `chart/templates/sync-team-roles-job.yaml` | Post-install/post-upgrade hook Job that creates the team roles and applies each DAG's `access_control` |
 | `chart/templates/team-roles-configmap.yaml` | Ships `chart/files/roles.json` into the cluster for the hook Job to read |
 | `chart/files/roles.json`    | The three team roles, imported by `airflow roles import`             |
@@ -180,6 +229,7 @@ themselves (adding/removing users or groups) through the Keycloak console.
 |---------------------|---------------------------------------------------------------------|
 | `make up`           | Everything: cluster, Keycloak, Airflow + permissions (default)       |
 | `make cluster`      | Create the kind cluster only                                         |
+| `make vault`        | Deploy dev-mode Vault, seed it, and sync secrets into Kubernetes Secrets + the rendered realm file |
 | `make sso`          | Deploy Keycloak and (re-)import the realm                            |
 | `make build`        | Build the CVE-hardened Airflow image                                 |
 | `make load`         | Build the image and load it into the kind cluster                    |
@@ -266,11 +316,22 @@ mirror, not the upstream chart repo, so it doesn't depend on
 
 Every credential in this repo is a hardcoded local-development value: the
 Keycloak admin, the four demo users (including `admin`/`admin` for Airflow),
-the OIDC client secret in
-`sso/realm-airflow.json` and in the `webserver_config.py` embedded in
-`chart/values.yaml`, and `apiSecretKey` also in `chart/values.yaml`. They
-exist so `make up` needs no setup. Replace all of them before this is
-reachable by anyone but you.
+the OIDC client secret, and the API secret key. They exist so `make up`
+needs no setup. Replace all of them before this is reachable by anyone but
+you.
+
+The OIDC client secret and API secret key -- the two Airflow itself actually
+needs to function -- live in Vault (`vault/seed-secrets.sh`; see
+[Secrets in Vault](#secrets-in-vault)) rather than as literals in
+`chart/values.yaml`/`sso/realm-airflow.json`. The Keycloak admin login and
+the four demo users' passwords are human login credentials, not something
+Airflow's backend consumes, so they stay plain literals in
+`sso/keycloak.yaml` and `sso/realm-airflow.json`.
+
+Vault's own dev-mode root token (`VAULT_DEV_ROOT_TOKEN_ID` in
+`vault/vault.yaml`) can't live inside Vault itself since it's what
+bootstraps access to Vault in the first place -- see
+[Secrets in Vault](#secrets-in-vault).
 
 ## Cleanup
 

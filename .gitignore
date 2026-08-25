@@ -1,6 +1,11 @@
 # Rendered by `make deploy` from chart/values.yaml; regenerated every run.
 .values.rendered.yaml
 
+# Rendered by `make vault` (vault/sync-secrets.sh) from sso/realm-airflow.json
+# with its VAULT_*_PLACEHOLDER tokens substituted from Vault; regenerated
+# every run.
+.realm-airflow.rendered.json
+
 # Pulled by `make chart-pull` for mirroring.
 airflow-*.tgz
 
