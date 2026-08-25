@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 #
 # Single source of truth for this repo's Airflow-side secret VALUES: the
-# OIDC client secret and Airflow's own API secret key. These used to be
-# hardcoded directly in chart/values.yaml and sso/realm-airflow.json; now
-# those files carry placeholder tokens (or apiSecretKeySecretName / a
-# `secret:` entry pointing at a Kubernetes Secret) and vault/sync-secrets.sh
-# fills them in from what gets seeded here instead.
+# OIDC client secret and Airflow's own API secret key, held together as one
+# Vault secret (secret/airflow-platform/airflow) since both are consumed by
+# the same release and there's no reason to split them into separate paths.
+# These used to be hardcoded directly in chart/values.yaml and
+# sso/realm-airflow.json; now those files carry a placeholder token (or
+# apiSecretKeySecretName / a `secret:` entry pointing at a Kubernetes
+# Secret) and vault/sync-secrets.sh fills them in from what gets seeded here
+# instead.
 #
 # Deliberately NOT in Vault: the Keycloak admin login and the four demo
 # users' passwords. Those are human login credentials, not secrets Airflow
@@ -26,12 +29,8 @@ KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 : "${NAMESPACE:?NAMESPACE must be set}"
 KUBECTL=("$KUBECTL_BIN" --context "$KUBE_CONTEXT" --namespace "$NAMESPACE")
 
-put() {
-  local path="$1"; shift
-  "${KUBECTL[@]}" exec deploy/airflow-vault -- vault kv put "secret/airflow-platform/$path" "$@" >/dev/null
-}
+"${KUBECTL[@]}" exec deploy/airflow-vault -- vault kv put secret/airflow-platform/airflow \
+  client-secret="airflow-local-dev-secret" \
+  api-secret-key="airflow-local-dev-api-secret-key" >/dev/null
 
-put oidc-client client-secret="airflow-local-dev-secret"
-put api-secret-key value="airflow-local-dev-api-secret-key"
-
-echo "vault/seed-secrets.sh: seeded secret/airflow-platform/{oidc-client,api-secret-key}"
+echo "vault/seed-secrets.sh: seeded secret/airflow-platform/airflow (client-secret, api-secret-key)"

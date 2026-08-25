@@ -36,27 +36,28 @@ airflow:
   # Pointing at an existing Secret (rather than the literal `apiSecretKey`
   # value) makes re-deploys idempotent the same way, while sourcing the
   # actual value from Vault: vault/sync-secrets.sh materializes this Secret
-  # from secret/airflow-platform/api-secret-key (see vault/seed-secrets.sh).
+  # (along with AIRFLOW_KEYCLOAK_CLIENT_SECRET below) from the single Vault
+  # secret secret/airflow-platform/airflow (see vault/seed-secrets.sh).
   #
-  # Named `vault-api-secret-key`, NOT e.g. `airflow-api-secret-key`: that
+  # Named `vault-airflow-secrets`, NOT e.g. `airflow-api-secret-key`: that
   # would collide with the name the chart's own api-secret-key-secret.yaml
   # template renders when apiSecretKeySecretName is unset, and `helm upgrade`
   # garbage-collects same-named resources that drop out of the chart's
   # manifest between releases -- it deleted this Secret out from under
   # already-upgraded pods the first time this was tried with an
   # `airflow-`-prefixed name.
-  apiSecretKeySecretName: "vault-api-secret-key"
+  apiSecretKeySecretName: "vault-airflow-secrets"
 
   # Exposes AIRFLOW_KEYCLOAK_CLIENT_SECRET (read by apiServerConfig below) as
-  # an env var on every Airflow container, sourced from the Secret
-  # vault/sync-secrets.sh materializes from secret/airflow-platform/oidc-client
-  # -- the same value Keycloak's own client is configured with (see
-  # sso/realm-airflow.json's VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER). Named
-  # `vault-oidc-client-secret` for the same collision-avoidance reason as
-  # apiSecretKeySecretName above.
+  # an env var on every Airflow container, sourced from the same
+  # vault-airflow-secrets Secret as apiSecretKeySecretName above (a
+  # different key on the same Secret object, not a separate one -- both
+  # values come from one Vault secret) -- the same client secret value
+  # Keycloak's own client is configured with (see sso/realm-airflow.json's
+  # VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER).
   secret:
     - envName: "AIRFLOW_KEYCLOAK_CLIENT_SECRET"
-      secretName: "vault-oidc-client-secret"
+      secretName: "vault-airflow-secrets"
       secretKey: "client-secret"
 
   # Chart 1.22.0's migration job runs only `airflow db migrate`. The FAB auth

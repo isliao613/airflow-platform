@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 #
 # Reads the Airflow-side secret values seeded by vault/seed-secrets.sh back
-# out of Vault and materializes them:
-#   - Kubernetes Secrets (named vault-*, deliberately NOT airflow-* -- see
-#     below), consumed via apiSecretKeySecretName / the top-level `secret:`
-#     list (chart/values.yaml) -- the same pattern the airflow chart already
-#     uses for its own metadata/fernet-key secrets, just sourced from Vault
-#     instead of a literal value.
+# out of Vault (a single path, secret/airflow-platform/airflow, holding both
+# the OIDC client secret and the API secret key) and materializes them:
+#   - One Kubernetes Secret, `vault-airflow-secrets` (named vault-*,
+#     deliberately NOT airflow-* -- see below), with two keys
+#     (client-secret, api-secret-key), consumed via the airflow chart's own
+#     apiSecretKeySecretName / top-level `secret:` list (chart/values.yaml)
+#     -- the same pattern the chart already uses for its own
+#     metadata/fernet-key secrets, just sourced from Vault instead of a
+#     literal value.
 #   - $REALM_RENDERED, a copy of $REALM_FILE with its
 #     VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER token substituted -- Keycloak's
 #     realm import has no equivalent of secretKeyRef, so the client secret
@@ -26,13 +29,7 @@ KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 KUBECTL=("$KUBECTL_BIN" --context "$KUBE_CONTEXT" --namespace "$NAMESPACE")
 
 get() {
-  "${KUBECTL[@]}" exec deploy/airflow-vault -- vault kv get -field="$2" "secret/airflow-platform/$1"
-}
-
-apply_secret() {
-  local name="$1"; shift
-  "${KUBECTL[@]}" create secret generic "$name" "$@" --dry-run=client -o yaml \
-    | "${KUBECTL[@]}" apply -f - >/dev/null
+  "${KUBECTL[@]}" exec deploy/airflow-vault -- vault kv get -field="$1" secret/airflow-platform/airflow
 }
 
 # Named `vault-*`, NOT `airflow-*`: the airflow chart's own release name is
@@ -45,17 +42,17 @@ apply_secret() {
 # actually hitting this: switching apiSecretKey -> apiSecretKeySecretName
 # deleted the vault-synced Secret out from under the just-upgraded pods).
 
-OIDC_SECRET=$(get oidc-client client-secret)
-API_SECRET_KEY=$(get api-secret-key value)
+OIDC_SECRET=$(get client-secret)
+API_SECRET_KEY=$(get api-secret-key)
 
-apply_secret vault-oidc-client-secret \
-  --from-literal=client-secret="$OIDC_SECRET"
-
-apply_secret vault-api-secret-key \
-  --from-literal=api-secret-key="$API_SECRET_KEY"
+"${KUBECTL[@]}" create secret generic vault-airflow-secrets \
+  --from-literal=client-secret="$OIDC_SECRET" \
+  --from-literal=api-secret-key="$API_SECRET_KEY" \
+  --dry-run=client -o yaml \
+  | "${KUBECTL[@]}" apply -f - >/dev/null
 
 sed \
   -e "s|VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER|$OIDC_SECRET|g" \
   "$REALM_FILE" > "$REALM_RENDERED"
 
-echo "vault/sync-secrets.sh: synced Kubernetes Secrets (vault-oidc-client-secret, vault-api-secret-key) and rendered $REALM_RENDERED"
+echo "vault/sync-secrets.sh: synced Kubernetes Secret vault-airflow-secrets (client-secret, api-secret-key) and rendered $REALM_RENDERED"

@@ -163,13 +163,15 @@ themselves (adding/removing users or groups) through the Keycloak console.
 
 The secrets Airflow itself needs to function -- the OIDC client secret and
 Airflow's API secret key -- live in a dev-mode Vault (`vault/vault.yaml`)
-instead of being a literal value in tracked chart/SSO YAML.
-`vault/seed-secrets.sh` is the single source of truth for the actual VALUES
-(still hardcoded local-dev values, just centralized in one file instead of
-scattered across two); `vault/sync-secrets.sh` reads them back out and:
+instead of being a literal value in tracked chart/SSO YAML, held together as
+one Vault secret (`secret/airflow-platform/airflow`) since both belong to
+the same release. `vault/seed-secrets.sh` is the single source of truth for
+the actual VALUES (still hardcoded local-dev values, just centralized in one
+file instead of scattered across two); `vault/sync-secrets.sh` reads them
+back out and:
 
-- Creates two Kubernetes Secrets -- `vault-oidc-client-secret`,
-  `vault-api-secret-key` -- consumed via the airflow chart's own
+- Creates one Kubernetes Secret -- `vault-airflow-secrets`, with two keys
+  (`client-secret`, `api-secret-key`) -- consumed via the airflow chart's own
   `apiSecretKeySecretName` / top-level `secret:` list (`chart/values.yaml`),
   the same mechanism the chart already uses for its own metadata/fernet-key
   secrets. Named `vault-*` and deliberately not `airflow-*`: a Secret sharing
