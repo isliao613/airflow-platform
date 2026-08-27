@@ -1,14 +1,18 @@
 """A DAG whose task raises on every run -- always ends in `failed`.
 
 For exercising failure paths: alerting/callbacks, retry behaviour, and
-remote-log capture of tracebacks (the traceback lands in MinIO like any
-other task log). No `access_control` -> only the Airflow Admin role sees it.
+remote-log capture of tracebacks. The raise comes from
+`common.greetings.fail` -- a shared module in `dags/common/` -- so this DAG
+also verifies the common-folder import. No `access_control` -> only the
+Airflow Admin role sees it.
 """
 
 from __future__ import annotations
 
 import pendulum
 from airflow.sdk import DAG, task
+
+from common.greetings import fail
 
 with DAG(
     dag_id="always_fails",
@@ -22,6 +26,6 @@ with DAG(
 
     @task
     def boom() -> None:
-        raise RuntimeError("always_fails: this task is designed to fail")
+        fail("always_fails: this task is designed to fail")
 
     boom()
