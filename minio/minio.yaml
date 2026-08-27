@@ -1,0 +1,132 @@
+# MinIO -- S3-compatible object storage that backs Airflow's remote task
+# logging, so the Celery workers can run as stateless Deployments
+# (airflow.workers.persistence.enabled: false in chart/values.yaml) without
+# losing task logs when a pod is recycled, and KubernetesExecutor task pods
+# keep their logs after the pod is deleted.
+#
+# Dev mode: single replica, emptyDir storage -- task logs are throwaway in a
+# kind POC, same spirit as the dev-mode Vault. The re-created bucket on
+# every `make minio` matches `make vault` always re-seeding.
+#
+# Root credentials come from Vault (vault/seed-secrets.sh ->
+# vault-airflow-secrets Secret), the same object the Airflow connection to
+# this MinIO (AIRFLOW_CONN_MINIO_S3, key minio-logging-conn) is synced into.
+#
+# No NodePort: the console is ClusterIP only. To browse it:
+#   kubectl -n airflow port-forward svc/airflow-minio 9001:9001
+# then http://localhost:9001 with the minio-root-user / minio-root-password
+# values from vault/seed-secrets.sh.
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-minio
+  namespace: airflow
+  labels:
+    app: airflow-minio
+spec:
+  selector:
+    app: airflow-minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-minio
+  namespace: airflow
+  labels:
+    app: airflow-minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-minio
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: airflow-minio
+    spec:
+      containers:
+        - name: minio
+          image: MINIO_IMAGE_PLACEHOLDER
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vault-airflow-secrets
+                  key: minio-root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vault-airflow-secrets
+                  key: minio-root-password
+          ports:
+            - name: s3
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+# Creates the log bucket once MinIO answers. Fixed name + short TTL; `make
+# minio` deletes any prior instance before re-applying so it is re-runnable.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airflow-minio-mkbucket
+  namespace: airflow
+spec:
+  backoffLimit: 20
+  ttlSecondsAfterFinished: 120
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: MC_IMAGE_PLACEHOLDER
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              until mc alias set local http://airflow-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+                echo "waiting for minio..."
+                sleep 3
+              done
+              mc mb --ignore-existing local/airflow-logs
+              mc ls local
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vault-airflow-secrets
+                  key: minio-root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vault-airflow-secrets
+                  key: minio-root-password

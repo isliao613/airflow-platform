@@ -18,7 +18,8 @@ make up
 
 This creates the `airflow` kind cluster, deploys a dev-mode Vault and seeds it
 with this repo's local secret values, deploys Keycloak and imports the
-`airflow` realm (rendered from those Vault-backed secrets), builds the
+`airflow` realm (rendered from those Vault-backed secrets), deploys a
+dev-mode MinIO for Airflow's remote task logging, builds the
 CVE-hardened Airflow image from the `Dockerfile`, loads it into the cluster
 with `kind load` (no registry push needed), and installs `chart/` -- this
 repo's own umbrella Helm chart, which wraps the `apache-airflow/airflow`
@@ -161,18 +162,21 @@ themselves (adding/removing users or groups) through the Keycloak console.
 
 ## Secrets in Vault
 
-The secrets Airflow itself needs to function -- the OIDC client secret and
-Airflow's API secret key -- live in a dev-mode Vault (`vault/vault.yaml`)
-instead of being a literal value in tracked chart/SSO YAML, held together as
-one Vault secret (`secret/airflow-platform/airflow`) since both belong to
-the same release. `vault/seed-secrets.sh` is the single source of truth for
+The secrets Airflow itself needs to function -- the OIDC client secret,
+Airflow's API secret key, and the MinIO credentials + connection for remote
+task logging -- live in a dev-mode Vault (`vault/vault.yaml`) instead of
+being a literal value in tracked chart/SSO YAML, held together as one Vault
+secret (`secret/airflow-platform/airflow`) since they all belong to the
+same release. `vault/seed-secrets.sh` is the single source of truth for
 the actual VALUES (still hardcoded local-dev values, just centralized in one
 file instead of scattered across two); `vault/sync-secrets.sh` reads them
 back out and:
 
-- Creates one Kubernetes Secret -- `vault-airflow-secrets`, with two keys
-  (`client-secret`, `api-secret-key`) -- consumed via the airflow chart's own
-  `apiSecretKeySecretName` / top-level `secret:` list (`chart/values.yaml`),
+- Creates one Kubernetes Secret -- `vault-airflow-secrets`, with keys
+  `client-secret`, `api-secret-key`, `minio-root-user`,
+  `minio-root-password` and `minio-logging-conn` -- consumed via the airflow
+  chart's own `apiSecretKeySecretName` / top-level `secret:` list
+  (`chart/values.yaml`) and by `minio/minio.yaml`,
   the same mechanism the chart already uses for its own metadata/fernet-key
   secrets. Named `vault-*` and deliberately not `airflow-*`: a Secret sharing
   a name the chart itself would ever render (e.g. `airflow-api-secret-key`)
@@ -220,6 +224,7 @@ To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 | `vault/vault.yaml`          | Dev-mode Vault Deployment + Service                                   |
 | `vault/seed-secrets.sh`     | Single source of truth for this repo's Airflow-side secret values; pushes them into Vault |
 | `vault/sync-secrets.sh`     | Reads secrets back out of Vault into Kubernetes Secrets and the rendered realm JSON |
+| `minio/minio.yaml`          | Dev-mode MinIO Deployment + Service + log-bucket Job; S3 backend for Airflow remote task logging (lets the workers be stateless Deployments) |
 | `chart/`                    | This repo's own umbrella Helm chart -- deploys `airflow` (a dependency, pinned in `chart/Chart.yaml`) as one Helm release together with this chart's own templates |
 | `chart/Chart.yaml`          | Declares the `airflow` chart dependency (OCI mirror, pinned version) |
 | `chart/Chart.lock`          | Pins the resolved dependency digest; committed like a lockfile        |
@@ -235,6 +240,7 @@ To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 | `make up`           | Everything: cluster, Keycloak, Airflow + permissions (default)       |
 | `make cluster`      | Create the kind cluster only                                         |
 | `make vault`        | Deploy dev-mode Vault, seed it, and sync secrets into Kubernetes Secrets + the rendered realm file |
+| `make minio`        | Deploy dev-mode MinIO (Airflow remote task logging) and (re)create the log bucket |
 | `make sso`          | Deploy Keycloak and (re-)import the realm                            |
 | `make build`        | Build the CVE-hardened Airflow image                                 |
 | `make load`         | Build the image and load it into the kind cluster                    |
@@ -276,11 +282,11 @@ the global `DAGs` permission.
 The executor is `CeleryExecutor,KubernetesExecutor` (Airflow 3 multi-executor).
 Two ways to give a DAG more CPU/memory:
 
-**Fixed classes (Celery).** Three worker `StatefulSet`s, one per size, each
+**Fixed classes (Celery).** Three worker `Deployment`s, one per size, each
 consuming its own queue -- set in `chart/values.yaml` under
 `airflow.workers.celery` (`queue` for the base set + `sets:` for the rest):
 
-| Class    | Queue    | StatefulSet               | Default for |
+| Class    | Queue    | Deployment                | Default for |
 |----------|----------|---------------------------|-------------|
 | small    | `small`  | `airflow-worker`          | any task with no `queue` (`operators.default_queue`) |
 | medium   | `medium` | `airflow-worker-medium`   | — |
@@ -317,6 +323,26 @@ def massive(): ...
 
 `dags/hello_small.py`, `hello_medium.py`, `hello_large.py` and
 `hello_kubernetes.py` are one hello-world DAG per placement.
+
+### Stateless workers + remote logging
+
+The workers are plain `Deployment`s (`airflow.workers.persistence.enabled:
+false`), not `StatefulSet`s with a per-pod log PVC. That only works because
+task logs go to **MinIO** instead of the worker's local disk:
+`airflow.config.logging` sets `remote_logging` + `remote_base_log_folder:
+s3://airflow-logs`, and the connection `minio_s3` (`AIRFLOW_CONN_MINIO_S3`)
+is a JSON connection built in `vault/seed-secrets.sh` -- `endpoint_url` at
+the in-cluster `airflow-minio` Service, path-style addressing (MinIO needs
+it), creds from the same Vault secret.
+
+`make minio` deploys a dev-mode MinIO (`minio/minio.yaml`, single replica,
+`emptyDir`) and re-creates the `airflow-logs` bucket every run. `make
+deploy` depends on it. Console: `kubectl -n airflow port-forward
+svc/airflow-minio 9001:9001`, then `http://localhost:9001` with the
+`minio-root-user` / `minio-root-password` values from `vault/seed-secrets.sh`.
+
+A KubernetesExecutor task pod (see above) keeps its logs the same way --
+they land in MinIO after the pod is deleted.
 
 ## Changing SSO users or groups
 
@@ -368,14 +394,15 @@ mirror, not the upstream chart repo, so it doesn't depend on
 
 Every credential in this repo is a hardcoded local-development value: the
 Keycloak admin, the four demo users (including `admin`/`admin` for Airflow),
-the OIDC client secret, and the API secret key. They exist so `make up`
-needs no setup. Replace all of them before this is reachable by anyone but
-you.
+the OIDC client secret, the API secret key, and the MinIO root user /
+password. They exist so `make up` needs no setup. Replace all of them before
+this is reachable by anyone but you.
 
-The OIDC client secret and API secret key -- the two Airflow itself actually
-needs to function -- live in Vault (`vault/seed-secrets.sh`; see
-[Secrets in Vault](#secrets-in-vault)) rather than as literals in
-`chart/values.yaml`/`sso/realm-airflow.json`. The Keycloak admin login and
+The OIDC client secret, the API secret key, and the MinIO credentials --
+what Airflow itself actually needs to function -- live in Vault
+(`vault/seed-secrets.sh`; see [Secrets in Vault](#secrets-in-vault)) rather
+than as literals in `chart/values.yaml`/`sso/realm-airflow.json`/
+`minio/minio.yaml`. The Keycloak admin login and
 the four demo users' passwords are human login credentials, not something
 Airflow's backend consumes, so they stay plain literals in
 `sso/keycloak.yaml` and `sso/realm-airflow.json`.

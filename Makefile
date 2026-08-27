@@ -27,6 +27,11 @@ KEYCLOAK_IMAGE  := keycloak/keycloak:26.7.2
 # vault/seed-secrets.sh) instead of them being hardcoded in chart/values.yaml,
 # sso/keycloak.yaml, and sso/realm-airflow.json.
 VAULT_IMAGE     := hashicorp/vault:2.0.4
+# Dev-mode MinIO backing Airflow remote task logging, so the Celery workers
+# can run as stateless Deployments (see minio/minio.yaml and
+# airflow.workers.persistence.enabled in chart/values.yaml).
+MINIO_IMAGE     := minio/minio:RELEASE.2025-04-22T22-12-26Z
+MC_IMAGE        := minio/mc:RELEASE.2025-04-16T18-13-26Z
 KIND_CONFIG     := kind-config.yaml
 # This repo's umbrella chart (wraps the airflow chart as a dependency, plus
 # its own templates/ for the team-roles-job hook) lives in its own folder,
@@ -36,6 +41,7 @@ VALUES_FILE     := $(CHART_DIR)/values.yaml
 REALM_FILE      := sso/realm-airflow.json
 KEYCLOAK_MANIFEST := sso/keycloak.yaml
 VAULT_MANIFEST  := vault/vault.yaml
+MINIO_MANIFEST  := minio/minio.yaml
 # values.yaml carries placeholders (image, version, tags) so it stays free of
 # hardcoded values; `deploy` renders them all from Makefile variables in one
 # sed pass. Done with sed rather than `--set` so there's exactly one place
@@ -58,7 +64,7 @@ KUBE_CONTEXT    := kind-$(CLUSTER_NAME)
 KUBECTL         := kubectl --context $(KUBE_CONTEXT)
 KUBENS          := $(KUBECTL) --namespace $(NAMESPACE)
 
-.PHONY: up down build load push deploy dep-build cluster cluster-down namespace sso vault \
+.PHONY: up down build load push deploy dep-build cluster cluster-down namespace sso vault minio \
         status ui logs clean chart-pull chart-push whoami
 
 up: cluster sso deploy ## Create the cluster, deploy Keycloak + Airflow, wire up permissions (one-click)
@@ -127,10 +133,20 @@ vault: namespace ## Deploy Vault (dev mode), seed it, and sync secrets into Kube
 	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) ./vault/seed-secrets.sh
 	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) REALM_FILE=$(REALM_FILE) REALM_RENDERED=$(REALM_RENDERED) ./vault/sync-secrets.sh
 
+minio: namespace vault ## Deploy dev-mode MinIO for Airflow remote task logging and (re)create the log bucket
+	@# emptyDir storage, so the bucket is gone on pod restart -- the
+	@# bucket-init Job re-creates it every run, same spirit as `vault`
+	@# re-seeding. `vault` above materializes the minio-root-* keys the
+	@# Deployment and the Job mount.
+	$(KUBENS) delete job airflow-minio-mkbucket --ignore-not-found
+	sed -e 's|MINIO_IMAGE_PLACEHOLDER|$(MINIO_IMAGE)|' -e 's|MC_IMAGE_PLACEHOLDER|$(MC_IMAGE)|' $(MINIO_MANIFEST) | $(KUBECTL) apply -f -
+	$(KUBENS) rollout status deployment/airflow-minio --timeout=2m
+	$(KUBENS) wait --for=condition=complete job/airflow-minio-mkbucket --timeout=2m
+
 dep-build: ## Fetch the airflow chart dependency into chart/charts/ (from the Docker Hub OCI mirror)
 	helm dependency build $(CHART_DIR)
 
-deploy: load namespace vault dep-build ## Build, load, and install/upgrade Airflow + the team-roles-job hook via Helm, as one release
+deploy: load namespace vault minio dep-build ## Build, load, and install/upgrade Airflow + the team-roles-job hook via Helm, as one release
 	# `vault` above ensures the airflow-oidc-client-secret and
 	# airflow-api-secret-key Kubernetes Secrets exist -- chart/values.yaml
 	# references them via `secret:` / apiSecretKeySecretName rather than

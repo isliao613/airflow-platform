@@ -38,10 +38,19 @@ airflow:
   #     needs that don't fit a fixed class.
   executor: "CeleryExecutor,KubernetesExecutor"
 
-  # Tasks with no explicit `queue` run on the `small` Celery class.
   config:
     operators:
+      # Tasks with no explicit `queue` run on the `small` Celery class.
       default_queue: small
+    logging:
+      # Task logs go to MinIO (minio/minio.yaml), not the worker's local
+      # disk -- so the Celery workers can be stateless Deployments
+      # (workers.persistence.enabled: false, below) and KubernetesExecutor
+      # task pods keep their logs after the pod is deleted. The connection
+      # AIRFLOW_CONN_MINIO_S3 is sourced from Vault (see the `secret:` list).
+      remote_logging: "True"
+      remote_base_log_folder: "s3://airflow-logs"
+      remote_log_conn_id: "minio_s3"
 
   # --- Option A: Celery worker classes ---------------------------------
   # Chart 1.22 renders one StatefulSet per "worker set": the base set
@@ -53,8 +62,13 @@ airflow:
   # Route a DAG to a class:   with DAG(..., default_args={"queue": "medium"})
   # Route a single task:      @task(queue="large")
   workers:
+    # Stateless: no per-pod PVC, so each worker set renders as a Deployment
+    # instead of a StatefulSet. Safe because task logs go to MinIO (config.
+    # logging above), not the worker's local disk.
+    persistence:
+      enabled: false
     celery:
-      # base set -> the `small` class, StatefulSet <release>-worker
+      # base set -> the `small` class, Deployment <release>-worker
       queue: small
       resources:
         requests:
@@ -114,6 +128,13 @@ airflow:
     - envName: "AIRFLOW_KEYCLOAK_CLIENT_SECRET"
       secretName: "vault-airflow-secrets"
       secretKey: "client-secret"
+    # Airflow connection to MinIO for remote task logging (config.logging
+    # above references it as remote_log_conn_id: minio_s3). Same Vault
+    # secret, different key -- a full JSON connection string built in
+    # vault/seed-secrets.sh.
+    - envName: "AIRFLOW_CONN_MINIO_S3"
+      secretName: "vault-airflow-secrets"
+      secretKey: "minio-logging-conn"
 
   # Chart 1.22.0's migration job runs only `airflow db migrate`. The FAB auth
   # manager keeps its own alembic history (users, roles, permissions) that is

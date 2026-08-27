@@ -44,10 +44,19 @@ get() {
 
 OIDC_SECRET=$(get client-secret)
 API_SECRET_KEY=$(get api-secret-key)
+MINIO_USER=$(get minio-root-user)
+MINIO_PASS=$(get minio-root-password)
+MINIO_CONN=$(get minio-logging-conn)
 
+# minio-root-user / minio-root-password are read by minio/minio.yaml (the
+# MinIO Deployment and its bucket-init Job); minio-logging-conn is exposed
+# to every Airflow container as AIRFLOW_CONN_MINIO_S3 (chart/values.yaml).
 "${KUBECTL[@]}" create secret generic vault-airflow-secrets \
   --from-literal=client-secret="$OIDC_SECRET" \
   --from-literal=api-secret-key="$API_SECRET_KEY" \
+  --from-literal=minio-root-user="$MINIO_USER" \
+  --from-literal=minio-root-password="$MINIO_PASS" \
+  --from-literal=minio-logging-conn="$MINIO_CONN" \
   --dry-run=client -o yaml \
   | "${KUBECTL[@]}" apply -f - >/dev/null
 
@@ -55,4 +64,4 @@ sed \
   -e "s|VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER|$OIDC_SECRET|g" \
   "$REALM_FILE" > "$REALM_RENDERED"
 
-echo "vault/sync-secrets.sh: synced Kubernetes Secret vault-airflow-secrets (client-secret, api-secret-key) and rendered $REALM_RENDERED"
+echo "vault/sync-secrets.sh: synced Kubernetes Secret vault-airflow-secrets (client-secret, api-secret-key, minio-root-user, minio-root-password, minio-logging-conn) and rendered $REALM_RENDERED"
