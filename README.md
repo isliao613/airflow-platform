@@ -196,6 +196,50 @@ human login credentials, not secrets Airflow's own backend needs to
 function, so they stay plain literals -- Vault only holds what's actually
 Airflow-side here.
 
+### What's in the secret
+
+`secret/airflow-platform/airflow` holds exactly these five keys (the values
+below are this repo's local-dev literals -- replace them for anything real):
+
+```json
+{
+  "client-secret": "airflow-local-dev-secret",
+  "api-secret-key": "airflow-local-dev-api-secret-key",
+  "minio-root-user": "airflow-logs",
+  "minio-root-password": "airflow-logs-local-dev-secret",
+  "minio-logging-conn": "{\"conn_type\":\"aws\",\"login\":\"airflow-logs\",\"password\":\"airflow-logs-local-dev-secret\",\"extra\":{\"endpoint_url\":\"http://airflow-minio:9000\",\"region_name\":\"us-east-1\",\"config_kwargs\":{\"s3\":{\"addressing_style\":\"path\"}}}}"
+}
+```
+
+| Key | Consumed as | By |
+|-----|-------------|----|
+| `client-secret` | env `AIRFLOW_KEYCLOAK_CLIENT_SECRET`, **and** substituted into `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` in the rendered realm | Airflow OAuth config + Keycloak's `airflow` client -- both sides must match |
+| `api-secret-key` | `apiSecretKeySecretName` -> env `AIRFLOW__API__SECRET_KEY` | Airflow API server |
+| `minio-root-user` | env `MINIO_ROOT_USER` via `secretKeyRef` | `minio/minio.yaml` (server + bucket Job) |
+| `minio-root-password` | env `MINIO_ROOT_PASSWORD` via `secretKeyRef` | same |
+| `minio-logging-conn` | env `AIRFLOW_CONN_MINIO_S3` | Airflow remote logging (`remote_log_conn_id: minio_s3`) |
+
+`minio-logging-conn` is a **string containing JSON**, not a nested object --
+that is Airflow's env-var connection format. Its `login`/`password` must
+equal `minio-root-user`/`minio-root-password`, `endpoint_url` is the
+in-cluster MinIO Service, and `addressing_style: path` is required because
+MinIO does not do virtual-host-style bucket addressing.
+
+To write all five by hand (this is exactly what `vault/seed-secrets.sh`
+does -- `kv put` replaces the whole secret, so every key goes in one call):
+
+```bash
+kubectl -n airflow exec deploy/airflow-vault -- vault kv put secret/airflow-platform/airflow \
+  client-secret='airflow-local-dev-secret' \
+  api-secret-key='airflow-local-dev-api-secret-key' \
+  minio-root-user='airflow-logs' \
+  minio-root-password='airflow-logs-local-dev-secret' \
+  minio-logging-conn='{"conn_type":"aws","login":"airflow-logs","password":"airflow-logs-local-dev-secret","extra":{"endpoint_url":"http://airflow-minio:9000","region_name":"us-east-1","config_kwargs":{"s3":{"addressing_style":"path"}}}}'
+```
+
+Then `vault/sync-secrets.sh` (or `make vault`) to push them into the
+`vault-airflow-secrets` Kubernetes Secret and re-render the realm file.
+
 Vault runs in dev mode: in-memory storage, auto-unsealed, with a `secret/`
 KV v2 mount created for free -- there's nothing here worth persisting across
 restarts, so `make vault` always re-seeds and re-syncs from scratch (same
