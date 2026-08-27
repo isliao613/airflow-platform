@@ -283,12 +283,12 @@ The executor is `CeleryExecutor,KubernetesExecutor` (Airflow 3 multi-executor).
 Two ways to give a DAG more CPU/memory:
 
 **Fixed classes (Celery).** Three worker `Deployment`s, one per size, each
-consuming its own queue -- set in `chart/values.yaml` under
-`airflow.workers.celery` (`queue` for the base set + `sets:` for the rest):
+consuming its own queue -- one entry per class in `chart/values.yaml` under
+`airflow.workers.celery.sets`:
 
 | Class    | Queue    | Deployment                | Default for |
 |----------|----------|---------------------------|-------------|
-| small    | `small`  | `airflow-worker`          | any task with no `queue` (`operators.default_queue`) |
+| small    | `small`  | `airflow-worker-small`    | any task with no `queue` (`operators.default_queue`) |
 | medium   | `medium` | `airflow-worker-medium`   | — |
 | large    | `large`  | `airflow-worker-large`    | — |
 

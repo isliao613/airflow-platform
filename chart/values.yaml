@@ -53,9 +53,12 @@ airflow:
       remote_log_conn_id: "minio_s3"
 
   # --- Option A: Celery worker classes ---------------------------------
-  # Chart 1.22 renders one StatefulSet per "worker set": the base set
-  # (enableDefault, below) plus each entry in celery.sets. Each has its
-  # own queue, resources, replica count, and (if enabled) KEDA scaler.
+  # Chart 1.22 renders one Deployment per "worker set" in celery.sets. Each
+  # has its own queue, resources, replica count, and (if enabled) KEDA
+  # scaler. enableDefault is off so there is no unnamed base worker: every
+  # class is an explicit set, giving evenly named Deployments
+  # <release>-worker-small / -medium / -large.
+  #
   # Resource values here are starting points -- size them for your nodes;
   # on a single-node kind cluster keep them small or pods stay Pending.
   #
@@ -68,16 +71,17 @@ airflow:
     persistence:
       enabled: false
     celery:
-      # base set -> the `small` class, Deployment <release>-worker
-      queue: small
-      resources:
-        requests:
-          cpu: 250m
-          memory: 512Mi
-        limits:
-          memory: 512Mi
-      # extra classes -> <release>-worker-medium, <release>-worker-large
+      enableDefault: false
       sets:
+        - name: small
+          queue: small
+          replicas: 1
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 512Mi
         - name: medium
           queue: medium
           replicas: 1
