@@ -160,6 +160,8 @@ deploy: load namespace vault dep-build ## Build, load, and install/upgrade Airfl
 	$(KUBENS) rollout status deployment/$(RELEASE_NAME)-dag-processor --timeout=5m
 	$(KUBENS) rollout status statefulset/$(RELEASE_NAME)-triggerer --timeout=5m
 	$(KUBENS) rollout status statefulset/$(RELEASE_NAME)-worker --timeout=5m
+	$(KUBENS) rollout status statefulset/$(RELEASE_NAME)-worker-medium --timeout=5m
+	$(KUBENS) rollout status statefulset/$(RELEASE_NAME)-worker-large --timeout=5m
 	@echo ""
 	@echo "Airflow $(AIRFLOW_VERSION) is up with Keycloak SSO."
 	@echo "  Airflow UI:       http://localhost:8080  (Sign in with keycloak)"

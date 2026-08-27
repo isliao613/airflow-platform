@@ -214,7 +214,7 @@ To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 | `kind-config.yaml`          | Single-node kind cluster; NodePorts `30080`/`30081`/`30082` -> host `8080`/`8181`/`8200` |
 | `Dockerfile`                | CVE-hardened image; bakes in `dags/`                                 |
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
-| `dags/`                     | Three demo DAGs, one per team, each with `access_control`            |
+| `dags/`                     | Three per-team demo DAGs (each with `access_control`) plus `worker_classes_demo.py` (worker-class / K8s-pod routing) |
 | `sso/realm-airflow.json`    | Keycloak realm: 3 groups, 4 users, the `airflow` OIDC client -- carries a `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` token, filled in by `vault/sync-secrets.sh`; user passwords stay literal |
 | `sso/keycloak.yaml`         | Keycloak Deployment + Service; admin login stays a literal local-dev value |
 | `vault/vault.yaml`          | Dev-mode Vault Deployment + Service                                   |
@@ -270,6 +270,52 @@ to mount:
 
 A DAG with no `access_control` is visible to nobody, since no team role holds
 the global `DAGs` permission.
+
+## Worker classes and per-DAG Kubernetes pods
+
+The executor is `CeleryExecutor,KubernetesExecutor` (Airflow 3 multi-executor).
+Two ways to give a DAG more CPU/memory:
+
+**Fixed classes (Celery).** Three worker `StatefulSet`s, one per size, each
+consuming its own queue -- set in `chart/values.yaml` under
+`airflow.workers.celery` (`queue` for the base set + `sets:` for the rest):
+
+| Class    | Queue    | StatefulSet               | Default for |
+|----------|----------|---------------------------|-------------|
+| small    | `small`  | `airflow-worker`          | any task with no `queue` (`operators.default_queue`) |
+| medium   | `medium` | `airflow-worker-medium`   | — |
+| large    | `large`  | `airflow-worker-large`    | — |
+
+Route to one with `queue=`:
+
+```python
+with DAG("my_pipeline", default_args={"queue": "medium"}, ...):   # whole DAG
+    ...
+
+@task(queue="large")                                              # one task
+def heavy(): ...
+```
+
+Resource values in `values.yaml` are starting points -- size them for your
+nodes. Add a class by appending to `sets:`; each entry also gets its own KEDA
+scaler if `workers.celery.keda` is enabled.
+
+**One-off pod (KubernetesExecutor).** For a task whose needs don't fit a
+class, run it as its own pod and size it inline:
+
+```python
+from kubernetes.client import models as k8s
+
+@task(
+    executor="KubernetesExecutor",
+    executor_config={"pod_override": k8s.V1Pod(spec=k8s.V1PodSpec(containers=[
+        k8s.V1Container(name="base", resources=k8s.V1ResourceRequirements(
+            requests={"cpu": "2", "memory": "8Gi"}, limits={"memory": "8Gi"}))]))},
+)
+def massive(): ...
+```
+
+`dags/worker_classes_demo.py` exercises all four placements.
 
 ## Changing SSO users or groups
 

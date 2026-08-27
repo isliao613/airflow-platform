@@ -26,7 +26,62 @@ airflow:
   defaultAirflowRepository: IMAGE_REPO_PLACEHOLDER
   defaultAirflowTag: IMAGE_TAG_PLACEHOLDER
 
-  executor: "CeleryExecutor"
+  # Airflow 3 multi-executor (the old hybrid CeleryKubernetesExecutor was
+  # removed in 3.0). First entry is the default; the chart renders the
+  # Celery workers AND the KubernetesExecutor pod template + pod-spawn RBAC
+  # because the string contains both names.
+  #   * Option A -- Celery worker classes (small/medium/large) for the
+  #     common case, picked per DAG/task with `queue=`.
+  #   * Option B -- a task with `executor="KubernetesExecutor"` runs as its
+  #     OWN pod, sized from the DAG via
+  #     executor_config={"pod_override": V1Pod(...)}, for one-off resource
+  #     needs that don't fit a fixed class.
+  executor: "CeleryExecutor,KubernetesExecutor"
+
+  # Tasks with no explicit `queue` run on the `small` Celery class.
+  config:
+    operators:
+      default_queue: small
+
+  # --- Option A: Celery worker classes ---------------------------------
+  # Chart 1.22 renders one StatefulSet per "worker set": the base set
+  # (enableDefault, below) plus each entry in celery.sets. Each has its
+  # own queue, resources, replica count, and (if enabled) KEDA scaler.
+  # Resource values here are starting points -- size them for your nodes;
+  # on a single-node kind cluster keep them small or pods stay Pending.
+  #
+  # Route a DAG to a class:   with DAG(..., default_args={"queue": "medium"})
+  # Route a single task:      @task(queue="large")
+  workers:
+    celery:
+      # base set -> the `small` class, StatefulSet <release>-worker
+      queue: small
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
+      # extra classes -> <release>-worker-medium, <release>-worker-large
+      sets:
+        - name: medium
+          queue: medium
+          replicas: 1
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 1Gi
+        - name: large
+          queue: large
+          replicas: 1
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              memory: 2Gi
 
   # Chart 1.22.0 renders the api secret as an ordinary resource with a
   # `randAlphaNum 32` default, so every `helm upgrade` -- which is what
