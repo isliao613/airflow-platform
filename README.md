@@ -426,70 +426,116 @@ exhausts `max_connections` first). The replicas are for **failover only** --
 Airflow is write-heavy and does not route reads to standbys, so they carry
 no query load.
 
-### Failover is manual
+### Failover and failback runbook
 
 `bitnami/postgresql` is **not** an HA chart: the replicas are plain
-streaming standbys and nothing promotes one automatically. If the primary
-dies, Airflow is down until someone runs:
+streaming standbys and nothing promotes one automatically. There is no
+detection either, so the RTO is however long it takes a human to notice.
+The whole cycle below was exercised on a live cluster, primary hard-killed.
+
+```
+ healthy    -- primary-0 (RW) --> read-0, read-1 (RO)
+     |
+ primary dies                              <- nothing detects this
+     |
+ make db-failover      (~1-2 min)
+     |
+ degraded   -- read-1 (RW), no replicas    <- Airflow fine, do NOT deploy
+     |
+ make db-failback      (~5 min, rebuilds)
+     |
+ healthy    -- primary-0 (RW) --> read-0, read-1 (RO)
+```
+
+#### 1. Failover -- during the incident
+
+**When:** the primary is gone. Airflow cannot reach the database and
+`airflow-postgresql-primary-0` is not `Running` (or is unreachable).
 
 ```
 make db-failover        # postgres/failover.sh
 ```
 
-which:
+| # | Step | Why |
+|---|------|-----|
+| 1 | **Fence the old primary** -- scale its StatefulSet to 0, wait for the pod to go | `pg_promote` does **not** stop the old primary. Skip this and you get a real split brain: verified here, the old primary kept accepting `INSERT`s the promoted node never saw, while the other replica went on streaming from it |
+| 2 | **Pick the target** -- compare `pg_last_wal_replay_lsn()` across the `read-*` pods, take the highest | Least data loss |
+| 3 | **Promote** -- `pg_promote(wait => true)`, poll until `pg_is_in_recovery() = f` | Makes it genuinely writable |
+| 4 | **Repoint the Service selector** -- `airflow-postgresql-primary` -> that pod | PgBouncer follows, so **Airflow's connection string never changes** (`data.metadataConnection.host` stays `airflow-postgresql-primary`) |
+| 5 | **Restart the Airflow tier** | Drops stale connections now instead of waiting for `pool_pre_ping` |
 
-1. picks the read replica with the highest replayed WAL position;
-2. `pg_promote()`s it to read-write;
-3. repoints the `airflow-postgresql-primary` **Service selector** at that
-   pod -- so PgBouncer, and therefore Airflow, follows with **no connection
-   string change** (`data.metadataConnection.host` stays
-   `airflow-postgresql-primary`);
-4. restarts the Airflow tier so stale connections drop immediately.
+Options: `TARGET=airflow-postgresql-read-0` to force a specific replica;
+`FENCE=false` to skip fencing (**unsafe** -- only when the old primary is
+provably gone).
 
-It **fences the old primary first** (scales its StatefulSet to 0). That is
-not cosmetic: `pg_promote` does not stop the old primary, so without fencing
-you get a genuine split brain -- verified on this cluster, the old primary
-kept accepting `INSERT`s that the promoted node never saw, while the
-non-promoted replica kept streaming from it.
+Verify:
 
-Force a specific target with `TARGET=airflow-postgresql-read-0`; skip
-fencing with `FENCE=false` (only when the old primary is provably gone).
+```
+kubectl -n airflow get endpoints airflow-postgresql-primary   # -> the promoted pod
+kubectl -n airflow exec deploy/airflow-scheduler -c scheduler -- airflow db check
+```
 
-### You must fail back before the next deploy
+You are now on **one writable node with no replicas**, and the next
+`make deploy` would cause an outage -- see below.
+
+#### 2. Failback -- as soon as practical
+
+**When:** failover is done and Airflow is serving. **Must happen before the
+next `make deploy`.**
 
 ```
 make db-failback        # postgres/failback.sh
 ```
 
-After a failover the cluster is not just degraded, it is **booby-trapped**:
-the chart still believes `airflow-postgresql-primary-0` is the primary, so
-the next `helm upgrade` -- i.e. any `make deploy` -- will
+| # | Step |
+|---|------|
+| 1 | Find the one pod with `pg_is_in_recovery() = f` |
+| 2 | `pg_dump --clean --if-exists` it to a local file (**aborts if the dump is empty**, so it never destroys a cluster it failed to read) |
+| 3 | Reset the Service selector to the chart's own labels (`patch --type json` **replaces** the map rather than merging) |
+| 4 | Delete both postgres StatefulSets and their PVCs -- the diverged timelines are unrecoverable without `pg_rewind` |
+| 5 | `helm upgrade` recreates a clean primary + 2 replicas |
+| 6 | Restore the dump into the new `primary-0` |
+| 7 | Restart the Airflow tier |
+
+If it dies partway (after step 4 there is no writable node left to dump
+from), re-run pointing at the dump it already took:
+
+```
+DUMP=/tmp/airflow-failback-XXXX.sql make db-failback
+```
+
+Verify:
+
+```
+kubectl -n airflow get endpoints airflow-postgresql-primary   # -> airflow-postgresql-primary-0
+kubectl -n airflow exec airflow-postgresql-primary-0 -c postgresql -- \
+  env PGPASSWORD=postgres psql -qtAX -U postgres -c "SELECT client_addr,state FROM pg_stat_replication;"
+  # two rows, both streaming
+```
+
+#### Why failback is not optional
+
+After a failover the cluster is not merely degraded, it is
+**booby-trapped**. The chart still believes `airflow-postgresql-primary-0`
+is the primary, so the next `helm upgrade` -- i.e. any `make deploy` --
+will:
 
 * **merge** its own selector back into the primary Service (Kubernetes does
-  not replace it), leaving a selector demanding both `component=primary`
-  *and* `pod-name=<promoted replica>`, which matches nothing, so the Service
+  not replace it), leaving a selector that demands both `component=primary`
+  *and* `pod-name=<promoted replica>`, which matches nothing -- the Service
   ends up with **zero endpoints**; and
 * scale the fenced StatefulSet back to 1, starting a stale `primary-0` that
   CrashLoopBackOffs on `could not locate a valid checkpoint record`.
 
-Airflow keeps working for a while after that, because PgBouncer holds
-already-established server connections -- **the outage lands later**, on the
-next PgBouncer restart. All of this was reproduced on a live cluster.
+And **the outage is latent**: PgBouncer holds already-established server
+connections, so `airflow db check` still passes right after the upgrade --
+it only breaks on the next PgBouncer restart, which is much harder to
+diagnose than an immediate failure. All of this was reproduced here.
 
-`make db-failback` gets you out: it dumps the promoted node, resets the
-Service selector, deletes the diverged StatefulSets and PVCs, lets Helm
-recreate a clean primary + 2 replicas, restores the dump, and restarts
-Airflow. It is resumable -- if it dies after the dump, re-run with
-`DUMP=<file>` to skip straight to the rebuild.
-
-So the answer to "does the primary need to go back to being the primary?" is
-**yes** -- not for correctness (the promoted node is a real primary and
-Airflow is happy pointing at it), but because the cluster has no redundancy
-until you rebuild, and because leaving it that way turns the next routine
-deploy into an outage.
-
-There is also no automatic detection, so the RTO is however long it takes a
-human to notice and run the script.
+So: does the primary have to go back to being the primary? **Yes** -- not
+for correctness (the promoted node is a real primary and Airflow is happy
+pointing at it), but because there is no redundancy until you rebuild, and
+because leaving it turns the next routine deploy into an outage.
 
 For anything beyond a POC, use a database that fails over on its own:
 managed (RDS Multi-AZ / Cloud SQL HA / Azure Flexible Server zone-redundant)
