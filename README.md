@@ -214,7 +214,7 @@ To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 | `kind-config.yaml`          | Single-node kind cluster; NodePorts `30080`/`30081`/`30082` -> host `8080`/`8181`/`8200` |
 | `Dockerfile`                | CVE-hardened image; bakes in `dags/`                                 |
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
-| `dags/`                     | Three per-team demo DAGs (each with `access_control`) plus `worker_classes_demo.py` (worker-class / K8s-pod routing) |
+| `dags/`                     | Three per-team demo DAGs (each with `access_control`) plus `hello_{small,medium,large,kubernetes}.py` (one per worker-class / K8s-pod placement) |
 | `sso/realm-airflow.json`    | Keycloak realm: 3 groups, 4 users, the `airflow` OIDC client -- carries a `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` token, filled in by `vault/sync-secrets.sh`; user passwords stay literal |
 | `sso/keycloak.yaml`         | Keycloak Deployment + Service; admin login stays a literal local-dev value |
 | `vault/vault.yaml`          | Dev-mode Vault Deployment + Service                                   |
@@ -315,7 +315,8 @@ from kubernetes.client import models as k8s
 def massive(): ...
 ```
 
-`dags/worker_classes_demo.py` exercises all four placements.
+`dags/hello_small.py`, `hello_medium.py`, `hello_large.py` and
+`hello_kubernetes.py` are one hello-world DAG per placement.
 
 ## Changing SSO users or groups
 
