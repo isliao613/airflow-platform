@@ -140,6 +140,44 @@ airflow:
       secretName: "vault-airflow-secrets"
       secretKey: "minio-logging-conn"
 
+  # --- Metadata database: bundled Postgres, replication mode -------------
+  # 1 primary + 2 read replicas (bitnami/postgresql streaming replication),
+  # fronted by the chart's own PgBouncer. bitnami/postgresql is NOT an HA
+  # chart -- the replicas are plain read-only standbys and nothing promotes
+  # one automatically. Failover is a manual, break-glass step:
+  # postgres/failover.sh  (or `make db-failover`).
+  postgresql:
+    architecture: replication
+    auth:
+      # Pin the replication user's password so `helm upgrade` doesn't churn
+      # a generated one (same reasoning as apiSecretKeySecretName above).
+      # Local-dev literal, like every other credential in this repo.
+      replicationPassword: "replication-local-dev"
+    primary:
+      persistence:
+        size: 2Gi
+    readReplicas:
+      replicaCount: 2
+      persistence:
+        size: 2Gi
+
+  # PgBouncer in front of the metadata + result-backend connections. With
+  # this on, the chart points every Airflow component at `airflow-pgbouncer`
+  # instead of Postgres directly.
+  pgbouncer:
+    enabled: true
+
+  # In replication mode bitnami's primary Service is
+  # `airflow-postgresql-primary` (there is no plain `airflow-postgresql`).
+  # postgres/failover.sh repoints THAT Service's selector at the promoted
+  # replica, so this host -- and PgBouncer's backend -- stay valid across a
+  # manual failover with no change to Airflow's connection string.
+  # resultBackendConnection is left null: the chart falls back to
+  # metadataConnection for it.
+  data:
+    metadataConnection:
+      host: airflow-postgresql-primary
+
   # Chart 1.22.0's migration job runs only `airflow db migrate`. The FAB auth
   # manager keeps its own alembic history (users, roles, permissions) that is
   # migrated by `airflow fab-db migrate`, and nothing in the chart runs it.

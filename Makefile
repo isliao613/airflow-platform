@@ -65,7 +65,7 @@ KUBECTL         := kubectl --context $(KUBE_CONTEXT)
 KUBENS          := $(KUBECTL) --namespace $(NAMESPACE)
 
 .PHONY: up down build load push deploy dep-build cluster cluster-down namespace sso vault minio \
-        status ui logs clean chart-pull chart-push whoami
+        db-failover status ui logs clean chart-pull chart-push whoami
 
 up: cluster sso deploy ## Create the cluster, deploy Keycloak + Airflow, wire up permissions (one-click)
 
@@ -145,6 +145,9 @@ minio: namespace vault ## Deploy dev-mode MinIO for Airflow remote task logging 
 
 dep-build: ## Fetch the airflow chart dependency into chart/charts/ (from the Docker Hub OCI mirror)
 	helm dependency build $(CHART_DIR)
+
+db-failover: ## Manually fail the metadata DB over to the freshest read replica (break-glass; see postgres/failover.sh)
+	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) ./postgres/failover.sh
 
 deploy: load namespace vault minio dep-build ## Build, load, and install/upgrade Airflow + the team-roles-job hook via Helm, as one release
 	# `vault` above ensures the airflow-oidc-client-secret and

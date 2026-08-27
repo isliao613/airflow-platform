@@ -284,6 +284,7 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `vault/seed-secrets.sh`     | Single source of truth for this repo's Airflow-side secret values; pushes them into Vault |
 | `vault/sync-secrets.sh`     | Reads secrets back out of Vault into Kubernetes Secrets and the rendered realm JSON |
 | `minio/minio.yaml`          | Dev-mode MinIO Deployment + Service + log-bucket Job; S3 backend for Airflow remote task logging (lets the workers be stateless Deployments) |
+| `postgres/failover.sh`      | Manual (break-glass) metadata-DB failover: promote the freshest read replica and repoint the primary Service at it |
 | `chart/`                    | This repo's own umbrella Helm chart -- deploys `airflow` (a dependency, pinned in `chart/Chart.yaml`) as one Helm release together with this chart's own templates |
 | `chart/Chart.yaml`          | Declares the `airflow` chart dependency (OCI mirror, pinned version) |
 | `chart/Chart.lock`          | Pins the resolved dependency digest; committed like a lockfile        |
@@ -300,6 +301,7 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `make cluster`      | Create the kind cluster only                                         |
 | `make vault`        | Deploy dev-mode Vault, seed it, and sync secrets into Kubernetes Secrets + the rendered realm file |
 | `make minio`        | Deploy dev-mode MinIO (Airflow remote task logging) and (re)create the log bucket |
+| `make db-failover`  | Manually fail the metadata DB over to the freshest read replica (break-glass) |
 | `make sso`          | Deploy Keycloak and (re-)import the realm                            |
 | `make build`        | Build the CVE-hardened Airflow image                                 |
 | `make load`         | Build the image and load it into the kind cluster                    |
@@ -354,6 +356,63 @@ failing silently at run time.
 Keep non-DAG modules under `common/` (or another subfolder), not loose in
 `dags/` -- the processor parses every top-level `.py` there looking for DAG
 objects.
+
+## Metadata database
+
+The chart's bundled `postgresql` subchart runs in **replication** mode --
+1 primary + 2 read replicas, streaming replication -- behind the chart's own
+**PgBouncer**, which every Airflow component connects through
+(`airflow.postgresql` / `airflow.pgbouncer` in `chart/values.yaml`):
+
+```
+Airflow (scheduler, workers, api-server, ...) -> airflow-pgbouncer
+                                                      |
+                                          airflow-postgresql-primary  (Service)
+                                                      |
+                                       airflow-postgresql-primary-0   (writable)
+                                            |                    |
+                          airflow-postgresql-read-0    airflow-postgresql-read-1
+```
+
+PgBouncer pools connections (Airflow opens one per scheduler, worker
+process, triggerer, dag-processor, **and per running task**, which is what
+exhausts `max_connections` first). The replicas are for **failover only** --
+Airflow is write-heavy and does not route reads to standbys, so they carry
+no query load.
+
+### Failover is manual
+
+`bitnami/postgresql` is **not** an HA chart: the replicas are plain
+streaming standbys and nothing promotes one automatically. If the primary
+dies, Airflow is down until someone runs:
+
+```
+make db-failover        # postgres/failover.sh
+```
+
+which:
+
+1. picks the read replica with the highest replayed WAL position;
+2. `pg_promote()`s it to read-write;
+3. repoints the `airflow-postgresql-primary` **Service selector** at that
+   pod -- so PgBouncer, and therefore Airflow, follows with **no connection
+   string change** (`data.metadataConnection.host` stays
+   `airflow-postgresql-primary`);
+4. restarts the Airflow tier so stale connections drop immediately.
+
+Force a specific target with `TARGET=airflow-postgresql-read-0`.
+
+**After a failover the cluster has no redundancy.** The old primary and the
+non-promoted replica are on a diverged timeline and will not re-follow the
+new primary; rebuilding means `pg_rewind`, a redeploy, or a restore. There
+is also no automatic detection, so the RTO is however long it takes a human
+to notice and run the script.
+
+For anything beyond a POC, use a database that fails over on its own:
+managed (RDS Multi-AZ / Cloud SQL HA / Azure Flexible Server zone-redundant)
+or, on-prem, an operator (CloudNativePG, Crunchy PGO) or Patroni + etcd.
+Point `airflow.postgresql.enabled: false` and
+`airflow.data.metadataSecretName` at it.
 
 ## Worker classes and per-DAG Kubernetes pods
 
