@@ -211,6 +211,64 @@ purely so you can browse the Vault UI directly.
 To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 `make sso`/`make deploy`, which both depend on it).
 
+### Adding a new secret
+
+Everything lives in the single Vault path `secret/airflow-platform/airflow`
+as one more key. Adding one touches three files, in this order:
+
+1. **`vault/seed-secrets.sh`** -- add the key to the `vault kv put`, and to
+   the `echo` at the bottom:
+
+   ```bash
+   "${KUBECTL[@]}" exec deploy/airflow-vault -- vault kv put secret/airflow-platform/airflow \
+     client-secret="airflow-local-dev-secret" \
+     ...
+     my-new-key="some-local-dev-value" >/dev/null
+   ```
+
+   `vault kv put` **replaces the whole secret**, so every key must be listed
+   in that one command -- a second `put` with just the new key wipes the
+   others.
+
+2. **`vault/sync-secrets.sh`** -- read it back and add it to the Kubernetes
+   Secret:
+
+   ```bash
+   MY_NEW=$(get my-new-key)
+   ...
+   "${KUBECTL[@]}" create secret generic vault-airflow-secrets \
+     ...
+     --from-literal=my-new-key="$MY_NEW" \
+   ```
+
+3. **Whatever consumes it.** Pick one:
+   - an **env var on every Airflow container** -- add to
+     `airflow.secret:` in `chart/values.yaml`:
+     ```yaml
+     - envName: "MY_NEW_ENV"
+       secretName: "vault-airflow-secrets"
+       secretKey: "my-new-key"
+     ```
+     An **Airflow connection** is just this with the env var named
+     `AIRFLOW_CONN_<CONN_ID>` and the value a connection URI or JSON (that
+     is how `minio_s3` works -- see `minio-logging-conn`). Such connections
+     resolve everywhere but do **not** appear in the UI's Connections list,
+     which only shows connections stored in the metadata DB.
+   - a **`secretKeyRef` in a plain manifest** (`sso/keycloak.yaml`,
+     `minio/minio.yaml`, ...) -- see MinIO's `minio-root-user`.
+   - a **placeholder substituted into a rendered file**, for consumers that
+     have no `secretKeyRef` equivalent -- see Keycloak's
+     `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER`. Add the `sed -e` to
+     `vault/sync-secrets.sh`.
+
+Then `make vault` (Vault is dev-mode/in-memory, so it re-seeds from scratch
+on every run) and `make deploy` if step 3 changed the chart. Verify with:
+
+```
+kubectl -n airflow get secret vault-airflow-secrets -o jsonpath='{.data}' | python3 -m json.tool
+kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-platform/airflow
+```
+
 ## Files
 
 | File                        | Purpose                                                              |
@@ -218,7 +276,8 @@ To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 | `kind-config.yaml`          | Single-node kind cluster; NodePorts `30080`/`30081`/`30082` -> host `8080`/`8181`/`8200` |
 | `Dockerfile`                | CVE-hardened image; bakes in `dags/`                                 |
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
-| `dags/`                     | Three per-team demo DAGs (each with `access_control`) plus `hello_{small,medium,large,kubernetes}.py` (one per worker-class / K8s-pod placement) |
+| `dags/`                     | Three per-team demo DAGs (each with `access_control`), `hello_{small,medium,large,kubernetes}.py` (one per worker-class / K8s-pod placement), and `always_fails.py` |
+| `dags/common/`              | Shared helpers imported by the demo DAGs (`from common.greetings import ...`); the import doubles as a check that the folder ships in the image |
 | `sso/realm-airflow.json`    | Keycloak realm: 3 groups, 4 users, the `airflow` OIDC client -- carries a `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` token, filled in by `vault/sync-secrets.sh`; user passwords stay literal |
 | `sso/keycloak.yaml`         | Keycloak Deployment + Service; admin login stays a literal local-dev value |
 | `vault/vault.yaml`          | Dev-mode Vault Deployment + Service                                   |
@@ -276,6 +335,25 @@ to mount:
 
 A DAG with no `access_control` is visible to nobody, since no team role holds
 the global `DAGs` permission.
+
+### Shared code: `dags/common/`
+
+Helpers shared by several DAGs live in `dags/common/` (a package, with an
+`__init__.py`). The DAG folder itself is on `sys.path`, so any DAG file
+imports from it directly:
+
+```python
+from common.greetings import where
+```
+
+Every demo DAG uses it, which makes the import a live check: if
+`dags/common/` were missing from the image or the module broke, each
+importing DAG would show up in `airflow dags list-import-errors` instead of
+failing silently at run time.
+
+Keep non-DAG modules under `common/` (or another subfolder), not loose in
+`dags/` -- the processor parses every top-level `.py` there looking for DAG
+objects.
 
 ## Worker classes and per-DAG Kubernetes pods
 
