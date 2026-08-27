@@ -1,0 +1,129 @@
+# Post-install/post-upgrade hook: reconciles the roles defined in a
+# roles.json and applies each DAG's access_control (airflow sync-perm
+# --include-dags). Replaces the old Makefile `sso-perms` target's kubectl
+# exec + kubectl cp + polling shell logic with a declarative Helm hook.
+#
+# roles.json comes from one of two ConfigMaps, chosen by
+# teamRoles.configMapName (see values.yaml):
+#   - unset  -> "<release>-roles", rendered by the chart from its bundled
+#               files/roles.json (the demo team_a/b/c set; the `make up` path)
+#   - set    -> that operator-managed ConfigMap, mounted as-is; the chart
+#               owns no roles.json in this mode
+# Either way it's an arbitrary set of roles, not a fixed team_a/b/c.
+# reconcile_roles.py always comes from "<release>-reconcile-roles" (chart-
+# owned logic), mounted separately.
+#
+# `airflow roles import` is kept only to CREATE roles that don't exist yet
+# -- it cannot UPDATE an existing role ("if a role already exists in the db,
+# it is not overwritten, even when the permissions change"), and after the
+# first deploy every declared role already exists (Postgres keeps its PVC
+# across `helm upgrade`). reconcile_roles.py then diffs roles.json against
+# `airflow roles export` and applies only the delta -- add-perms before
+# del-perms, the role is never deleted (nobody is dropped from a role
+# mid-upgrade), and FAB built-in roles are refused. The managed set is
+# exactly the role names in the file; roles absent from it are left
+# untouched, never pruned.
+#
+# Lives directly in this chart's own templates/ (this IS the root chart,
+# chart/Chart.yaml) alongside the airflow dependency, so it's always
+# installed as part of the SAME Helm release as the airflow chart --
+# .Release.Name below is therefore guaranteed to be that release, and this
+# Job can read its secrets/ConfigMap directly (confirmed against a live
+# apache-airflow chart 1.22.0 deploy):
+#   - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN <- secret "<release>-metadata" key "connection"
+#   - AIRFLOW__CORE__FERNET_KEY           <- secret "<release>-fernet-key" key "fernet-key"
+#   - /opt/airflow/airflow.cfg            <- configmap "<release>-config" key "airflow.cfg"
+# The airflow.cfg mount is not optional: it's where the chart sets
+# `[core] auth_manager = ...FabAuthManager`. Without it, `airflow roles
+# import` fails with `AirflowSecurityManagerV2 has no attribute
+# get_all_roles` (found by actually running this Job without the mount).
+#
+# Helm merges hooks from the root chart and its dependencies into one
+# ordering for the release, sorted by hook-weight -- so weight "5" here still
+# runs after the airflow dependency's own migrate-database-job (weight "1")
+# and create-user-job (weight "2"), confirmed by reading those templates.
+#
+# Helm always waits for hook Jobs to complete before considering the release
+# successful, regardless of --wait -- so `helm upgrade --install` blocks
+# until this finishes (or --timeout expires), same as the old target did.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sync-roles
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: sync-roles
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # sync-perm --include-dags reads access_control from the
+              # SERIALIZED DAGs in the DB, not the files on disk, so wait for
+              # the dag processor to have run at least one serialization
+              # pass. `airflow dags list` reads the same serialized table.
+              # Not fatal if it stays empty: a deployment may legitimately
+              # have no DAGs yet, and sync-perm is a harmless no-op then.
+              echo "waiting for the dag processor to serialize DAGs..."
+              for i in $(seq 1 60); do
+                found=$(airflow dags list -o plain 2>/dev/null | grep -cE '^[a-zA-Z]' || true)
+                if [ "$found" -ge 1 ]; then
+                  echo "$found DAG(s) serialized"
+                  break
+                fi
+                if [ "$i" = "60" ]; then
+                  echo "WARNING: no DAGs serialized within 5m; continuing"
+                  break
+                fi
+                sleep 5
+              done
+              ROLES_FILE=/opt/airflow/roles/{{ .Values.teamRoles.key | default "roles.json" }}
+              echo "creating any missing roles (import can't update existing ones)..."
+              airflow roles import "$ROLES_FILE"
+              echo "reconciling roles to roles.json (delta only, add before delete)..."
+              airflow roles export -p /tmp/current-roles.json
+              python3 /opt/airflow/reconcile/reconcile_roles.py \
+                --desired "$ROLES_FILE" \
+                --current /tmp/current-roles.json
+              echo "applying per-DAG access_control..."
+              airflow sync-perm --include-dags
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-metadata
+                  key: connection
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-fernet-key
+                  key: fernet-key
+          volumeMounts:
+            - name: airflow-config
+              mountPath: /opt/airflow/airflow.cfg
+              subPath: airflow.cfg
+              readOnly: true
+            - name: reconcile-script
+              mountPath: /opt/airflow/reconcile
+              readOnly: true
+            - name: roles
+              mountPath: /opt/airflow/roles
+              readOnly: true
+      volumes:
+        - name: airflow-config
+          configMap:
+            name: {{ .Release.Name }}-config
+        - name: reconcile-script
+          configMap:
+            name: {{ .Release.Name }}-reconcile-roles
+        - name: roles
+          configMap:
+            name: {{ .Values.teamRoles.configMapName | default (printf "%s-roles" .Release.Name) }}

@@ -23,7 +23,7 @@ CVE-hardened Airflow image from the `Dockerfile`, loads it into the cluster
 with `kind load` (no registry push needed), and installs `chart/` -- this
 repo's own umbrella Helm chart, which wraps the `apache-airflow/airflow`
 chart (pinned to `1.22.0`, from a Docker Hub OCI mirror) as a dependency,
-plus its own `templates/sync-team-roles-job.yaml` -- a post-install/
+plus its own `templates/sync-roles-job.yaml` -- a post-install/
 post-upgrade hook Job that creates the team roles and applies each DAG's
 `access_control` once the release installs.
 
@@ -86,7 +86,7 @@ Airflow uses the FAB auth manager (the chart's default) with
    on a `DAG:` resource as permission to list -- and then filters the list down
    to exactly those DAGs.
 
-Steps 3 and 4 are done by `chart/templates/sync-team-roles-job.yaml`, a
+Steps 3 and 4 are done by `chart/templates/sync-roles-job.yaml`, a
 post-install/post-upgrade hook Job defined directly in this repo's own
 umbrella chart. It's installed as part of the same Helm release as the
 airflow dependency (Helm merges hooks from a root chart and its dependencies
@@ -224,7 +224,7 @@ To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 | `chart/Chart.yaml`          | Declares the `airflow` chart dependency (OCI mirror, pinned version) |
 | `chart/Chart.lock`          | Pins the resolved dependency digest; committed like a lockfile        |
 | `chart/values.yaml`         | Overrides for the `airflow` dependency (under the `airflow:` key): NodePort, api secret sourced from Vault (`apiSecretKeySecretName`), Keycloak sidecar, and the Flask-AppBuilder/Keycloak SSO config (`apiServer.apiServerConfig` / `webserver.webserverConfig`); also `image:` for this chart's own hook Job |
-| `chart/templates/sync-team-roles-job.yaml` | Post-install/post-upgrade hook Job that creates the team roles and applies each DAG's `access_control` |
+| `chart/templates/sync-roles-job.yaml` | Post-install/post-upgrade hook Job that creates the team roles and applies each DAG's `access_control` |
 | `chart/templates/team-roles-configmap.yaml` | Ships `chart/files/roles.json` into the cluster for the hook Job to read |
 | `chart/files/roles.json`    | The three team roles, imported by `airflow roles import`             |
 

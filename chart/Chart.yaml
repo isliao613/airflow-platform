@@ -5,7 +5,7 @@ description: >-
   kind development. Wraps the upstream apache-airflow/airflow chart (mirrored
   to Docker Hub as an OCI artifact, see CHART_OCI_REPO in the Makefile) as a
   dependency so it deploys as a single Helm release together with this
-  chart's own templates/sync-team-roles-job.yaml, whose post-install/
+  chart's own templates/sync-roles-job.yaml, whose post-install/
   post-upgrade hook creates the team roles and applies each DAG's
   access_control.
 version: 0.1.0

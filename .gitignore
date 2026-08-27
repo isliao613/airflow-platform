@@ -14,3 +14,6 @@ airflow-*.tgz
 # chart/Chart.lock (NOT ignored) pins the resolved digest, same spirit as
 # pinning IMAGE_TAG -- commit it.
 /chart/charts/*.tgz
+
+# Byte-compiled reconcile_roles.py, if it is ever run/tested locally.
+__pycache__/

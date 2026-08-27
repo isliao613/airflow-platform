@@ -14,7 +14,7 @@
 # produces is always the image the pods run and never has to be kept in sync
 # by hand in two places. The top-level `image:` key at the bottom of this
 # file is filled in from the same two Makefile variables, since the
-# sync-team-roles Job must run the identical image.
+# sync-roles Job must run the identical image.
 #
 # Consequence: installing this file with plain `helm` instead of `make
 # deploy` installs these placeholder strings as literal, broken values --
@@ -195,7 +195,7 @@ airflow:
   webserver:
     webserverConfig: *webserverConfig
 
-# Image for this chart's own templates/sync-team-roles-job.yaml (the hook
+# Image for this chart's own templates/sync-roles-job.yaml (the hook
 # Job that creates the team roles and applies each DAG's access_control). Not
 # under the `airflow:` key since this Job isn't part of the airflow
 # dependency -- but it invokes the `airflow` CLI directly, so it must run the
@@ -203,3 +203,24 @@ airflow:
 image:
   repository: IMAGE_REPO_PLACEHOLDER
   tag: IMAGE_TAG_PLACEHOLDER
+
+# Where the sync-roles hook Job gets roles.json from (see
+# chart/templates/sync-roles-job.yaml).
+#
+#   configMapName: ""       -> the chart renders its own bundled
+#                              files/roles.json (the demo team_a/b/c set).
+#                              This is the `make up` path: zero setup.
+#   configMapName: my-roles -> the Job instead mounts the existing,
+#                              operator-managed ConfigMap `my-roles` and
+#                              reads its `key`. The chart does NOT render or
+#                              own roles.json in this mode -- create/update
+#                              `my-roles` out of band (kubectl apply,
+#                              Kustomize, Argo CD, ...) and re-run the hook
+#                              (any `helm upgrade`) to reconcile. A missing
+#                              ConfigMap makes the hook pod fail to start.
+#
+# reconcile_roles.py is always chart-owned (it's logic, not operator data)
+# and mounts from its own chart-rendered ConfigMap regardless of this.
+teamRoles:
+  configMapName: ""
+  key: roles.json

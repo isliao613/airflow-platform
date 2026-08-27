@@ -1,11 +1,20 @@
-# Team roles definition, read from files/roles.json at this chart's root
-# (NOT under templates/ -- .Files.Get only sees non-template files). Edit
-# files/roles.json and re-run `make deploy` (or `make up`) to pick up a
-# change; the Job below re-imports it idempotently on every install/upgrade.
+{{- if not .Values.teamRoles.configMapName }}
+# Bundled roles.json -- the demo team_a/b/c permission set, read from
+# files/roles.json at this chart's root (NOT under templates/ -- .Files.Get
+# only reads non-template files).
+#
+# Rendered ONLY when teamRoles.configMapName is unset, i.e. the `make up`
+# path. In production, point teamRoles.configMapName at an operator-managed
+# ConfigMap instead and this template renders nothing -- see values.yaml.
+#
+# Edit files/roles.json and re-run `make deploy` (or `make up`) to pick up a
+# change here; the hook Job reconciles it idempotently on every
+# install/upgrade.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: team-roles
+  name: {{ .Release.Name }}-roles
 data:
   roles.json: |
 {{ .Files.Get "files/roles.json" | indent 4 }}
+{{- end }}
