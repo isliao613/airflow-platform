@@ -65,7 +65,7 @@ KUBECTL         := kubectl --context $(KUBE_CONTEXT)
 KUBENS          := $(KUBECTL) --namespace $(NAMESPACE)
 
 .PHONY: up down build load push deploy dep-build cluster cluster-down namespace sso vault minio \
-        db-failover status ui logs clean chart-pull chart-push whoami
+        db-failover db-failback status ui logs clean chart-pull chart-push whoami
 
 up: cluster sso deploy ## Create the cluster, deploy Keycloak + Airflow, wire up permissions (one-click)
 
@@ -148,6 +148,13 @@ dep-build: ## Fetch the airflow chart dependency into chart/charts/ (from the Do
 
 db-failover: ## Manually fail the metadata DB over to the freshest read replica (break-glass; see postgres/failover.sh)
 	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) ./postgres/failover.sh
+
+db-failback: ## Rebuild a clean primary+replicas after a failover, carrying the data over (RUN BEFORE THE NEXT deploy)
+	@# Not optional: until this runs, `helm upgrade` (any `make deploy`)
+	@# leaves the primary Service with zero endpoints and restarts a stale
+	@# primary-0. See the comment header in postgres/failback.sh.
+	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) RELEASE_NAME=$(RELEASE_NAME) \
+	  CHART_DIR=$(CHART_DIR) VALUES=$(RENDERED_VALUES) ./postgres/failback.sh
 
 deploy: load namespace vault minio dep-build ## Build, load, and install/upgrade Airflow + the team-roles-job hook via Helm, as one release
 	# `vault` above ensures the airflow-oidc-client-secret and

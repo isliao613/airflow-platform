@@ -328,7 +328,8 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `vault/seed-secrets.sh`     | Single source of truth for this repo's Airflow-side secret values; pushes them into Vault |
 | `vault/sync-secrets.sh`     | Reads secrets back out of Vault into Kubernetes Secrets and the rendered realm JSON |
 | `minio/minio.yaml`          | Dev-mode MinIO Deployment + Service + log-bucket Job; S3 backend for Airflow remote task logging (lets the workers be stateless Deployments) |
-| `postgres/failover.sh`      | Manual (break-glass) metadata-DB failover: promote the freshest read replica and repoint the primary Service at it |
+| `postgres/failover.sh`      | Manual (break-glass) metadata-DB failover: fence the old primary, promote the freshest read replica, repoint the primary Service at it |
+| `postgres/failback.sh`      | Rebuild a clean primary + replicas after a failover, carrying the data over -- required before the next `make deploy` |
 | `chart/`                    | This repo's own umbrella Helm chart -- deploys `airflow` (a dependency, pinned in `chart/Chart.yaml`) as one Helm release together with this chart's own templates |
 | `chart/Chart.yaml`          | Declares the `airflow` chart dependency (OCI mirror, pinned version) |
 | `chart/Chart.lock`          | Pins the resolved dependency digest; committed like a lockfile        |
@@ -346,6 +347,7 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `make vault`        | Deploy dev-mode Vault, seed it, and sync secrets into Kubernetes Secrets + the rendered realm file |
 | `make minio`        | Deploy dev-mode MinIO (Airflow remote task logging) and (re)create the log bucket |
 | `make db-failover`  | Manually fail the metadata DB over to the freshest read replica (break-glass) |
+| `make db-failback`  | Rebuild a clean primary + replicas after a failover (run before the next `make deploy`) |
 | `make sso`          | Deploy Keycloak and (re-)import the realm                            |
 | `make build`        | Build the CVE-hardened Airflow image                                 |
 | `make load`         | Build the image and load it into the kind cluster                    |
@@ -444,13 +446,50 @@ which:
    `airflow-postgresql-primary`);
 4. restarts the Airflow tier so stale connections drop immediately.
 
-Force a specific target with `TARGET=airflow-postgresql-read-0`.
+It **fences the old primary first** (scales its StatefulSet to 0). That is
+not cosmetic: `pg_promote` does not stop the old primary, so without fencing
+you get a genuine split brain -- verified on this cluster, the old primary
+kept accepting `INSERT`s that the promoted node never saw, while the
+non-promoted replica kept streaming from it.
 
-**After a failover the cluster has no redundancy.** The old primary and the
-non-promoted replica are on a diverged timeline and will not re-follow the
-new primary; rebuilding means `pg_rewind`, a redeploy, or a restore. There
-is also no automatic detection, so the RTO is however long it takes a human
-to notice and run the script.
+Force a specific target with `TARGET=airflow-postgresql-read-0`; skip
+fencing with `FENCE=false` (only when the old primary is provably gone).
+
+### You must fail back before the next deploy
+
+```
+make db-failback        # postgres/failback.sh
+```
+
+After a failover the cluster is not just degraded, it is **booby-trapped**:
+the chart still believes `airflow-postgresql-primary-0` is the primary, so
+the next `helm upgrade` -- i.e. any `make deploy` -- will
+
+* **merge** its own selector back into the primary Service (Kubernetes does
+  not replace it), leaving a selector demanding both `component=primary`
+  *and* `pod-name=<promoted replica>`, which matches nothing, so the Service
+  ends up with **zero endpoints**; and
+* scale the fenced StatefulSet back to 1, starting a stale `primary-0` that
+  CrashLoopBackOffs on `could not locate a valid checkpoint record`.
+
+Airflow keeps working for a while after that, because PgBouncer holds
+already-established server connections -- **the outage lands later**, on the
+next PgBouncer restart. All of this was reproduced on a live cluster.
+
+`make db-failback` gets you out: it dumps the promoted node, resets the
+Service selector, deletes the diverged StatefulSets and PVCs, lets Helm
+recreate a clean primary + 2 replicas, restores the dump, and restarts
+Airflow. It is resumable -- if it dies after the dump, re-run with
+`DUMP=<file>` to skip straight to the rebuild.
+
+So the answer to "does the primary need to go back to being the primary?" is
+**yes** -- not for correctness (the promoted node is a real primary and
+Airflow is happy pointing at it), but because the cluster has no redundancy
+until you rebuild, and because leaving it that way turns the next routine
+deploy into an outage.
+
+There is also no automatic detection, so the RTO is however long it takes a
+human to notice and run the script.
 
 For anything beyond a POC, use a database that fails over on its own:
 managed (RDS Multi-AZ / Cloud SQL HA / Azure Flexible Server zone-redundant)
