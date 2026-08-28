@@ -214,7 +214,7 @@ below are this repo's local-dev literals -- replace them for anything real):
   "api-secret-key": "airflow-local-dev-api-secret-key",
   "fernet-key": "YWlyZmxvdy1sb2NhbC1kZXYtZmVybmV0LWtleS0zMmI=",
   "metadata-db-password": "postgres",
-  "metadata-connection": "postgresql://postgres:postgres@airflow-postgresql-primary:5432/postgres?sslmode=disable",
+  "connection": "postgresql://postgres:postgres@airflow-postgresql-primary:5432/postgres?sslmode=disable",
   "replication-password": "replication-local-dev",
   "minio-root-user": "airflow-logs",
   "minio-root-password": "airflow-logs-local-dev-secret",
@@ -228,7 +228,7 @@ below are this repo's local-dev literals -- replace them for anything real):
 | `api-secret-key` | `apiSecretKeySecretName` -> env `AIRFLOW__API__SECRET_KEY` | Airflow API server |
 | `fernet-key` | `fernetKeySecretName` -> env `AIRFLOW__CORE__FERNET_KEY` | Every Airflow component, plus this chart's own sync-roles hook Job |
 | `metadata-db-password` | `postgresql.auth.existingSecret` (by reference) | The postgres StatefulSet, and `make db-failover`/`db-failback` |
-| `connection` | `data.metadataSecretName` -> env `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` | Every Airflow component, plus this chart's own sync-roles hook Job. The full DSN, assembled in `vault/seed-secrets.sh` |
+| `connection` | `data.metadataSecretName` -> env `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` | Every Airflow component, plus this chart's own sync-roles hook Job. The full DSN, assembled in `vault/seed-secrets.sh`. The name is the chart's, not ours -- it looks this key up by that exact string |
 | `replication-password` | `postgresql.auth.existingSecret` (by reference) | Streaming replication between primary and the two read replicas |
 | `minio-root-user` | env `MINIO_ROOT_USER` via `secretKeyRef` | `minio/minio.yaml` (server + bucket Job) |
 | `minio-root-password` | env `MINIO_ROOT_PASSWORD` via `secretKeyRef` | same |
@@ -249,7 +249,7 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv put secret/airflow-plat
   api-secret-key='airflow-local-dev-api-secret-key' \
   fernet-key='YWlyZmxvdy1sb2NhbC1kZXYtZmVybmV0LWtleS0zMmI=' \
   metadata-db-password='postgres' \
-  metadata-connection='postgresql://postgres:postgres@airflow-postgresql-primary:5432/postgres?sslmode=disable' \
+  connection='postgresql://postgres:postgres@airflow-postgresql-primary:5432/postgres?sslmode=disable' \
   replication-password='replication-local-dev' \
   minio-root-user='airflow-logs' \
   minio-root-password='airflow-logs-local-dev-secret' \

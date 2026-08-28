@@ -91,10 +91,10 @@ METADATA_CONNECTION="postgresql://${METADATA_DB_USER}:${METADATA_DB_PASSWORD}@${
   api-secret-key="airflow-local-dev-api-secret-key" \
   fernet-key="$FERNET_KEY" \
   metadata-db-password="$METADATA_DB_PASSWORD" \
-  metadata-connection="$METADATA_CONNECTION" \
+  connection="$METADATA_CONNECTION" \
   replication-password="$REPLICATION_PASSWORD" \
   minio-root-user="$MINIO_USER" \
   minio-root-password="$MINIO_PASS" \
   minio-logging-conn="$MINIO_CONN" >/dev/null
 
-echo "vault/seed-secrets.sh: seeded secret/airflow-platform/airflow (client-secret, api-secret-key, fernet-key, metadata-db-password, metadata-connection, replication-password, minio-root-user, minio-root-password, minio-logging-conn)"
+echo "vault/seed-secrets.sh: seeded secret/airflow-platform/airflow (client-secret, api-secret-key, fernet-key, metadata-db-password, connection, replication-password, minio-root-user, minio-root-password, minio-logging-conn)"

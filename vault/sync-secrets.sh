@@ -13,7 +13,9 @@
 #
 #     `connection` is the one key whose NAME is not ours to choose: it is
 #     the full metadata DSN (assembled in seed-secrets.sh) and the chart
-#     looks it up by that exact name under data.metadataSecretName. With
+#     looks it up by that exact name under data.metadataSecretName. It is
+#     therefore called `connection` in Vault too -- every key here keeps the
+#     same name on both sides, so there is no mapping to remember. With
 #     PgBouncer gone, that single reference is all Airflow needs -- no
 #     database credential reaches Helm as a value at all.
 #   - $REALM_RENDERED, a copy of $REALM_FILE with its
@@ -52,7 +54,7 @@ OIDC_SECRET=$(get client-secret)
 API_SECRET_KEY=$(get api-secret-key)
 FERNET_KEY=$(get fernet-key)
 METADATA_DB_PASSWORD=$(get metadata-db-password)
-METADATA_CONNECTION=$(get metadata-connection)
+METADATA_CONNECTION=$(get connection)
 REPLICATION_PASSWORD=$(get replication-password)
 MINIO_USER=$(get minio-root-user)
 MINIO_PASS=$(get minio-root-password)
