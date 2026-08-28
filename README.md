@@ -1,6 +1,6 @@
 # airflow-platform
 
-One-click local deployment of Apache Airflow 3.3.0 (Helm chart 1.22.0) on a
+One-click local deployment of Apache Airflow 3.3.1 (Helm chart 1.22.0) on a
 `kind` cluster, with Keycloak SSO and per-team DAG isolation.
 
 ## Prerequisites
@@ -29,10 +29,12 @@ post-upgrade hook Job that creates the team roles and applies each DAG's
 `access_control` once the release installs.
 
 The image build is the slowest step and the one most likely to fail first: it
-pulls the `apache/airflow:3.3.0` base image, applies OS updates, and installs a
-patched `litellm`. What gets deployed is that locally built
-`isliao613/airflow:3.3.0-hardened.1`, **not** upstream `apache/airflow:3.3.0`
-directly -- see `Dockerfile` for what is patched and why.
+pulls the `apache/airflow:3.3.1` base image, applies OS updates, and adds
+`socat` (for the Keycloak sidecar). What gets deployed is that locally built
+`isliao613/airflow:3.3.1-hardened.1`, **not** upstream `apache/airflow:3.3.1`
+directly -- see `Dockerfile` for what is patched and why. As of 3.3.1 there is
+no Python-package patch: the litellm CVEs that needed one under 3.3.0 are
+fixed in the litellm 3.3.1 already bundles.
 
 | Service          | URL                     | Credentials                       |
 |------------------|-------------------------|-----------------------------------|
@@ -322,6 +324,7 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
 | `dags/`                     | Three per-team demo DAGs (each with `access_control`), `hello_{small,medium,large,kubernetes}.py` (one per worker-class / K8s-pod placement), and `always_fails.py` |
 | `dags/common/`              | Shared helpers imported by the demo DAGs (`from common.greetings import ...`); the import doubles as a check that the folder ships in the image |
+| `tests/`                    | `pytest` unit tests for the DAGs; sits beside `dags/`, so the image never carries them -- see [Testing the DAGs](#testing-the-dags) |
 | `sso/realm-airflow.json`    | Keycloak realm: 3 groups, 4 users, the `airflow` OIDC client -- carries a `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` token, filled in by `vault/sync-secrets.sh`; user passwords stay literal |
 | `sso/keycloak.yaml`         | Keycloak Deployment + Service; admin login stays a literal local-dev value |
 | `vault/vault.yaml`          | Dev-mode Vault Deployment + Service                                   |
@@ -353,6 +356,7 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `make load`         | Build the image and load it into the kind cluster                    |
 | `make dep-build`    | Fetch the `airflow` chart dependency into `chart/charts/`             |
 | `make deploy`       | Build, load, and install/upgrade `chart/` via Helm (one release: Airflow + the team-roles-job hook, which creates team roles and applies each DAG's `access_control`) |
+| `make test`         | Run the `dags/` unit tests (`tests/`) inside the hardened image      |
 | `make status`       | Show pod status                                                      |
 | `make logs`         | Tail scheduler logs                                                  |
 | `make ui`           | Print the UI URLs                                                    |
@@ -402,6 +406,47 @@ failing silently at run time.
 Keep non-DAG modules under `common/` (or another subfolder), not loose in
 `dags/` -- the processor parses every top-level `.py` there looking for DAG
 objects.
+
+## Testing the DAGs
+
+`tests/` holds the `dags/` unit tests. It sits at the repo root next to
+`dags/`, not inside it, so the `Dockerfile`'s `COPY dags/` never picks them
+up: they neither ship to the cluster nor get parsed by the dag processor.
+What they cover:
+
+- **`test_dag_integrity.py`** -- `DagBag` parses `dags/` with zero import
+  errors (which also proves `dags/common/` ships and imports), and the set
+  of DAGs is exactly the eight expected, one per source file.
+- **`test_access_control.py`** -- each `team_*_pipeline` grants exactly its
+  own role `{can_read, can_edit}` and that role exists in
+  `chart/files/roles.json`; every `hello_*` / `always_fails` DAG carries no
+  `access_control` at all (Admin-only). This is the isolation contract from
+  [How the isolation actually works](#how-the-isolation-actually-works),
+  turned into a regression guard.
+- **`test_worker_placement.py`** -- `hello_{small,medium,large}` pin the
+  matching `queue=`, each queue has a worker set in `chart/values.yaml`,
+  `small` is the default queue, and `hello_kubernetes` runs with
+  `executor="KubernetesExecutor"` + a `pod_override`.
+- **`test_dag_behavior.py`** -- task callables and wiring: the
+  `extract -> report` shape, and `always_fails` really raises with
+  `retries: 0`.
+- **`test_greetings.py`** -- pure unit tests for `common.greetings` (no
+  Airflow needed).
+
+Run them the easy way -- inside the hardened image, which already has
+Airflow 3.3.1 and the DAGs:
+
+```
+make test
+```
+
+Or locally against a matching Airflow (pin it to `AIRFLOW_VERSION`):
+
+```
+pip install -r tests/requirements.txt \
+  -c "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.10.txt"
+pytest
+```
 
 ## Metadata database
 
@@ -628,7 +673,7 @@ they land in MinIO after the pod is deleted.
 all derive from them. So picking up a new CVE fix is a one-line change:
 
 1. Edit the `Dockerfile`.
-2. Bump the revision suffix in `IMAGE_TAG` (`3.3.0-hardened.1` -> `.2`).
+2. Bump the revision suffix in `IMAGE_TAG` (`3.3.1-hardened.1` -> `.2`).
 3. `make up`
 
 Don't hardcode an image, version, or tag directly in `chart/values.yaml` --
