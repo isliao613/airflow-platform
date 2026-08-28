@@ -16,8 +16,9 @@
 #   2. picks the read replica with the highest replayed WAL position;
 #   3. promotes it to a read-write primary (pg_promote);
 #   4. repoints the `airflow-postgresql-primary` Service selector at that
-#      pod, so everything connecting to it (PgBouncer, and through it every
-#      Airflow component) follows -- no connection-string change;
+#      pod. Every Airflow component connects to that Service by name (there
+#      is no PgBouncer any more), so they all follow it -- no
+#      connection-string change;
 #   5. restarts the Airflow tier so stale DB connections are dropped now
 #      rather than after pool_pre_ping notices.
 #
@@ -101,7 +102,7 @@ echo "    Service/$PRIMARY_SVC now targets $target"
 
 # --- 5. bounce the Airflow tier -----------------------------------------------
 mapfile -t objs < <("${K[@]}" get deploy,statefulset -o name \
-  | grep -E 'airflow-(pgbouncer|scheduler|api-server|dag-processor|triggerer|worker)' || true)
+  | grep -E 'airflow-(scheduler|api-server|dag-processor|triggerer|worker)' || true)
 [ ${#objs[@]} -gt 0 ] && "${K[@]}" rollout restart "${objs[@]}"
 
 echo

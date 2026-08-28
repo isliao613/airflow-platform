@@ -98,7 +98,8 @@ echo "==> deleting postgres StatefulSets and PVCs"
 # --- 5. recreate a clean cluster --------------------------------------------
 echo "==> helm upgrade to recreate primary + replicas"
 "$HELM_BIN" upgrade "$RELEASE_NAME" "$CHART_DIR" \
-  --kube-context "$KUBE_CONTEXT" --namespace "$NAMESPACE" -f "$VALUES" --timeout 15m
+  --kube-context "$KUBE_CONTEXT" --namespace "$NAMESPACE" \
+  -f "$VALUES" --timeout 15m
 "${K[@]}" rollout status "statefulset/$PRIMARY_STS" --timeout=10m
 
 # --- 6. restore --------------------------------------------------------------
@@ -109,7 +110,7 @@ echo "    restored"
 
 # --- 7. bounce Airflow --------------------------------------------------------
 mapfile -t objs < <("${K[@]}" get deploy,statefulset -o name \
-  | grep -E 'airflow-(pgbouncer|scheduler|api-server|dag-processor|triggerer|worker)' || true)
+  | grep -E 'airflow-(scheduler|api-server|dag-processor|triggerer|worker)' || true)
 [ ${#objs[@]} -gt 0 ] && "${K[@]}" rollout restart "${objs[@]}"
 
 echo

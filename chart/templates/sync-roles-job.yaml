@@ -30,7 +30,9 @@
 # .Release.Name below is therefore guaranteed to be that release, and this
 # Job can read its secrets/ConfigMap directly (confirmed against a live
 # apache-airflow chart 1.22.0 deploy):
-#   - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN <- secret "<release>-metadata" key "connection"
+#   - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN <- secret named by airflow.data.metadataSecretName
+#                                            (vault-airflow-secrets), falling back to
+#                                            "<release>-metadata"; key "connection"
 #   - AIRFLOW__CORE__FERNET_KEY           <- secret named by airflow.fernetKeySecretName
 #                                            (vault-airflow-secrets), falling back to
 #                                            "<release>-fernet-key"; key "fernet-key"
@@ -101,7 +103,7 @@ spec:
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-metadata
+                  name: {{ .Values.airflow.data.metadataSecretName | default (printf "%s-metadata" .Release.Name) }}
                   key: connection
             - name: AIRFLOW__CORE__FERNET_KEY
               valueFrom:

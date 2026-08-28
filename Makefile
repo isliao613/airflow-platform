@@ -147,14 +147,20 @@ dep-build: ## Fetch the airflow chart dependency into chart/charts/ (from the Do
 	helm dependency build $(CHART_DIR)
 
 db-failover: ## Manually fail the metadata DB over to the freshest read replica (break-glass; see postgres/failover.sh)
-	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) ./postgres/failover.sh
+	@# PG_SUPERUSER_PASSWORD comes from the same Vault-synced Secret the
+	@# cluster itself uses, so the break-glass path can't drift from it.
+	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) \
+	  PG_SUPERUSER_PASSWORD=$$($(KUBENS) get secret vault-airflow-secrets -o jsonpath='{.data.metadata-db-password}' | base64 -d) \
+	  ./postgres/failover.sh
 
 db-failback: ## Rebuild a clean primary+replicas after a failover, carrying the data over (RUN BEFORE THE NEXT deploy)
 	@# Not optional: until this runs, `helm upgrade` (any `make deploy`)
 	@# leaves the primary Service with zero endpoints and restarts a stale
 	@# primary-0. See the comment header in postgres/failback.sh.
 	KUBE_CONTEXT=$(KUBE_CONTEXT) NAMESPACE=$(NAMESPACE) RELEASE_NAME=$(RELEASE_NAME) \
-	  CHART_DIR=$(CHART_DIR) VALUES=$(RENDERED_VALUES) ./postgres/failback.sh
+	  CHART_DIR=$(CHART_DIR) VALUES=$(RENDERED_VALUES) \
+	  PG_SUPERUSER_PASSWORD=$$($(KUBENS) get secret vault-airflow-secrets -o jsonpath='{.data.metadata-db-password}' | base64 -d) \
+	  ./postgres/failback.sh
 
 deploy: load namespace vault minio dep-build ## Build, load, and install/upgrade Airflow + the team-roles-job hook via Helm, as one release
 	# `vault` above ensures the airflow-oidc-client-secret and

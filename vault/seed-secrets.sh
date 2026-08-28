@@ -56,12 +56,45 @@ EOF
 # re-encrypt, not by editing this in place.
 FERNET_KEY="YWlyZmxvdy1sb2NhbC1kZXYtZmVybmV0LWtleS0zMmI="
 
+# Metadata-database credentials. METADATA_DB_PASSWORD is the postgres
+# superuser password: it is what the bundled postgresql StatefulSet sets at
+# initdb, and what METADATA_CONNECTION below embeds -- both must be the same
+# value, which is exactly why it belongs in one place. REPLICATION_PASSWORD is the streaming
+# replication user (1 primary + 2 read replicas, see chart/values.yaml).
+#
+# NOTE: bitnami/postgresql only applies these at FIRST init. Changing them
+# here does not change an existing database -- the pods keep the old
+# password and the next deploy just breaks authentication. To rotate for
+# real: ALTER USER inside the running primary first, or delete the
+# postgresql PVCs and let it re-init (destroys the metadata DB).
+METADATA_DB_PASSWORD="postgres"
+REPLICATION_PASSWORD="replication-local-dev"
+
+# Airflow's full metadata DSN, assembled here from the password above the same
+# way MINIO_CONN is -- one place to edit, no chance of the password and the
+# connection string drifting apart.
+#
+# The host is the `airflow-postgresql-primary` SERVICE, not a pod. That
+# indirection is what makes postgres/failover.sh work: it repoints that
+# Service's selector at the promoted replica, so this string stays valid
+# across a failover and Airflow never needs a new connection string. There is
+# no PgBouncer in front any more (airflow.pgbouncer.enabled: false), so this
+# is a direct connection -- port 5432, database `postgres`, no pool alias.
+METADATA_DB_HOST="airflow-postgresql-primary"
+METADATA_DB_PORT="5432"
+METADATA_DB_USER="postgres"
+METADATA_DB_NAME="postgres"
+METADATA_CONNECTION="postgresql://${METADATA_DB_USER}:${METADATA_DB_PASSWORD}@${METADATA_DB_HOST}:${METADATA_DB_PORT}/${METADATA_DB_NAME}?sslmode=disable"
+
 "${KUBECTL[@]}" exec deploy/airflow-vault -- vault kv put secret/airflow-platform/airflow \
   client-secret="airflow-local-dev-secret" \
   api-secret-key="airflow-local-dev-api-secret-key" \
   fernet-key="$FERNET_KEY" \
+  metadata-db-password="$METADATA_DB_PASSWORD" \
+  metadata-connection="$METADATA_CONNECTION" \
+  replication-password="$REPLICATION_PASSWORD" \
   minio-root-user="$MINIO_USER" \
   minio-root-password="$MINIO_PASS" \
   minio-logging-conn="$MINIO_CONN" >/dev/null
 
-echo "vault/seed-secrets.sh: seeded secret/airflow-platform/airflow (client-secret, api-secret-key, fernet-key, minio-root-user, minio-root-password, minio-logging-conn)"
+echo "vault/seed-secrets.sh: seeded secret/airflow-platform/airflow (client-secret, api-secret-key, fernet-key, metadata-db-password, metadata-connection, replication-password, minio-root-user, minio-root-password, minio-logging-conn)"

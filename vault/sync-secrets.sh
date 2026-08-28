@@ -4,12 +4,18 @@
 # out of Vault (a single path, secret/airflow-platform/airflow, holding both
 # the OIDC client secret and the API secret key) and materializes them:
 #   - One Kubernetes Secret, `vault-airflow-secrets` (named vault-*,
-#     deliberately NOT airflow-* -- see below), with two keys
-#     (client-secret, api-secret-key), consumed via the airflow chart's own
-#     apiSecretKeySecretName / top-level `secret:` list (chart/values.yaml)
-#     -- the same pattern the chart already uses for its own
-#     metadata/fernet-key secrets, just sourced from Vault instead of a
-#     literal value.
+#     deliberately NOT airflow-* -- see below), holding every key seeded in
+#     seed-secrets.sh. The chart consumes them by reference:
+#     apiSecretKeySecretName, fernetKeySecretName, data.metadataSecretName,
+#     postgresql.auth.existingSecret, and the top-level `secret:` list
+#     (all in chart/values.yaml) -- the same pattern the chart already uses
+#     for its own secrets, just sourced from Vault instead of a literal.
+#
+#     `connection` is the one key whose NAME is not ours to choose: it is
+#     the full metadata DSN (assembled in seed-secrets.sh) and the chart
+#     looks it up by that exact name under data.metadataSecretName. With
+#     PgBouncer gone, that single reference is all Airflow needs -- no
+#     database credential reaches Helm as a value at all.
 #   - $REALM_RENDERED, a copy of $REALM_FILE with its
 #     VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER token substituted -- Keycloak's
 #     realm import has no equivalent of secretKeyRef, so the client secret
@@ -45,6 +51,9 @@ get() {
 OIDC_SECRET=$(get client-secret)
 API_SECRET_KEY=$(get api-secret-key)
 FERNET_KEY=$(get fernet-key)
+METADATA_DB_PASSWORD=$(get metadata-db-password)
+METADATA_CONNECTION=$(get metadata-connection)
+REPLICATION_PASSWORD=$(get replication-password)
 MINIO_USER=$(get minio-root-user)
 MINIO_PASS=$(get minio-root-password)
 MINIO_CONN=$(get minio-logging-conn)
@@ -56,6 +65,9 @@ MINIO_CONN=$(get minio-logging-conn)
   --from-literal=client-secret="$OIDC_SECRET" \
   --from-literal=api-secret-key="$API_SECRET_KEY" \
   --from-literal=fernet-key="$FERNET_KEY" \
+  --from-literal=metadata-db-password="$METADATA_DB_PASSWORD" \
+  --from-literal=connection="$METADATA_CONNECTION" \
+  --from-literal=replication-password="$REPLICATION_PASSWORD" \
   --from-literal=minio-root-user="$MINIO_USER" \
   --from-literal=minio-root-password="$MINIO_PASS" \
   --from-literal=minio-logging-conn="$MINIO_CONN" \
@@ -66,4 +78,4 @@ sed \
   -e "s|VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER|$OIDC_SECRET|g" \
   "$REALM_FILE" > "$REALM_RENDERED"
 
-echo "vault/sync-secrets.sh: synced Kubernetes Secret vault-airflow-secrets (client-secret, api-secret-key, fernet-key, minio-root-user, minio-root-password, minio-logging-conn) and rendered $REALM_RENDERED"
+echo "vault/sync-secrets.sh: synced Kubernetes Secret vault-airflow-secrets (client-secret, api-secret-key, fernet-key, metadata-db-password, connection, replication-password, minio-root-user, minio-root-password, minio-logging-conn) and rendered $REALM_RENDERED"

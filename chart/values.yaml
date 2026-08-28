@@ -167,35 +167,102 @@ airflow:
   # postgres/failover.sh  (or `make db-failover`).
   postgresql:
     architecture: replication
+    # Both database passwords come from the Vault-synced Secret by
+    # reference, the same shape as apiSecretKeySecretName above -- no
+    # literal here, and the bitnami subchart stops rendering its own
+    # `airflow-postgresql` Secret entirely. `secretKeys` is what makes this
+    # work against a Secret we did not design for it: bitnami looks for
+    # `postgres-password` / `replication-password` by default, and this
+    # remaps those lookups onto our own key names.
+    #
+    # Pinning them at all matters for the same reason as
+    # apiSecretKeySecretName: left to the chart, `helm upgrade` churns a
+    # newly generated password on every deploy.
+    #
+    # This is the postgres SERVER side. Airflow's own side is
+    # data.metadataSecretName below -- with no PgBouncer in the way, both are
+    # plain Secret references and no database credential reaches Helm as a
+    # value at all.
     auth:
-      # Pin the replication user's password so `helm upgrade` doesn't churn
-      # a generated one (same reasoning as apiSecretKeySecretName above).
-      # Local-dev literal, like every other credential in this repo.
-      replicationPassword: "replication-local-dev"
+      existingSecret: "vault-airflow-secrets"
+      secretKeys:
+        adminPasswordKey: "metadata-db-password"
+        replicationPasswordKey: "replication-password"
     primary:
       persistence:
         size: 2Gi
+      # Airflow opens a connection per scheduler, per worker process, per
+      # triggerer, per dag-processor, AND per running task. With no PgBouncer
+      # in front (pgbouncer.enabled: false below) those all land here
+      # directly, so the stock max_connections=100 is the ceiling that gets
+      # hit first. Raise it rather than discover it under load. Size this
+      # against your real worker concurrency: roughly
+      # (workers x worker_concurrency) + ~15 for the always-on components.
+      extendedConfiguration: |
+        max_connections = 500
+      # Postgres forks a process per connection (~5-10MB each), so
+      # max_connections is also a memory budget: 500 x ~8MB is roughly 4Gi
+      # worst case. The limit below is sized for that -- raising
+      # max_connections without raising this just moves the failure from
+      # "too many clients" to an OOMKill.
+      #
+      # Memory limit but no CPU limit, matching the worker classes below:
+      # a CPU limit only buys throttling, and the database is the one thing
+      # here that should never be throttled.
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          memory: 4Gi
     readReplicas:
       replicaCount: 2
       persistence:
         size: 2Gi
+      # Same max_connections as the primary, deliberately: a replica is a
+      # promotion target (postgres/failover.sh), and after `pg_promote` it
+      # IS the primary. Leaving it at the stock 100 would mean surviving the
+      # failover only to exhaust connections minutes later -- and a replica
+      # cannot be reconfigured mid-incident without another restart.
+      extendedConfiguration: |
+        max_connections = 500
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 4Gi
 
-  # PgBouncer in front of the metadata + result-backend connections. With
-  # this on, the chart points every Airflow component at `airflow-pgbouncer`
-  # instead of Postgres directly.
+  # No connection pooler: every Airflow component connects straight to
+  # Postgres. This is deliberate -- see `primary.extendedConfiguration`
+  # above for the max_connections headroom that replaces the pooling, and
+  # the README for the trade-off.
+  #
+  # It is also what lets the metadata credential stay a pure Secret
+  # reference (data.metadataSecretName below). The chart builds PgBouncer's
+  # users.txt from the LITERAL Helm value data.metadataConnection.pass, with
+  # no Secret-reference equivalent -- so with PgBouncer on, that password has
+  # to reach Helm as a value no matter where it is stored.
   pgbouncer:
-    enabled: true
+    enabled: false
 
-  # In replication mode bitnami's primary Service is
-  # `airflow-postgresql-primary` (there is no plain `airflow-postgresql`).
-  # postgres/failover.sh repoints THAT Service's selector at the promoted
-  # replica, so this host -- and PgBouncer's backend -- stay valid across a
-  # manual failover with no change to Airflow's connection string.
-  # resultBackendConnection is left null: the chart falls back to
-  # metadataConnection for it.
+  # The whole metadata DSN comes from the Vault-synced Secret, under its
+  # `connection` key (the name the chart looks for). Nothing about the
+  # database -- password, host, port, user -- appears in this file; it is
+  # assembled in vault/seed-secrets.sh, which is the single source of truth
+  # for it.
+  #
+  # The DSN's host is the `airflow-postgresql-primary` SERVICE, not a pod.
+  # That indirection is what postgres/failover.sh relies on: it repoints
+  # that Service's selector at the promoted replica, so the connection
+  # string stays valid across a manual failover and no Airflow component
+  # needs reconfiguring. (In replication mode bitnami names the Service
+  # `-primary`; there is no plain `airflow-postgresql`.)
+  #
+  # resultBackendSecretName is left unset: the chart falls back to this same
+  # metadata connection for the Celery result backend.
   data:
-    metadataConnection:
-      host: airflow-postgresql-primary
+    metadataSecretName: "vault-airflow-secrets"
 
   # Chart 1.22.0's migration job runs only `airflow db migrate`. The FAB auth
   # manager keeps its own alembic history (users, roles, permissions) that is

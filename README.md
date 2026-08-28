@@ -166,8 +166,9 @@ themselves (adding/removing users or groups) through the Keycloak console.
 ## Secrets in Vault
 
 The secrets Airflow itself needs to function -- the OIDC client secret,
-Airflow's API secret key, the Fernet key, and the MinIO credentials +
-connection for remote task logging -- live in a dev-mode Vault (`vault/vault.yaml`) instead of
+Airflow's API secret key, the Fernet key, the metadata-database passwords,
+and the MinIO credentials + connection for remote task logging -- live in a
+dev-mode Vault (`vault/vault.yaml`) instead of
 being a literal value in tracked chart/SSO YAML, held together as one Vault
 secret (`secret/airflow-platform/airflow`) since they all belong to the
 same release. `vault/seed-secrets.sh` is the single source of truth for
@@ -176,9 +177,11 @@ file instead of scattered across two); `vault/sync-secrets.sh` reads them
 back out and:
 
 - Creates one Kubernetes Secret -- `vault-airflow-secrets`, with keys
-  `client-secret`, `api-secret-key`, `fernet-key`, `minio-root-user`,
+  `client-secret`, `api-secret-key`, `fernet-key`, `metadata-db-password`,
+  `connection`, `replication-password`, `minio-root-user`,
   `minio-root-password` and `minio-logging-conn` -- consumed via the airflow
-  chart's own `apiSecretKeySecretName` / `fernetKeySecretName` / top-level
+  chart's own `apiSecretKeySecretName` / `fernetKeySecretName` /
+  `data.metadataSecretName` / `postgresql.auth.existingSecret` / top-level
   `secret:` list
   (`chart/values.yaml`) and by `minio/minio.yaml`,
   the same mechanism the chart already uses for its own metadata/fernet-key
@@ -202,7 +205,7 @@ Airflow-side here.
 
 ### What's in the secret
 
-`secret/airflow-platform/airflow` holds exactly these six keys (the values
+`secret/airflow-platform/airflow` holds exactly these nine keys (the values
 below are this repo's local-dev literals -- replace them for anything real):
 
 ```json
@@ -210,6 +213,9 @@ below are this repo's local-dev literals -- replace them for anything real):
   "client-secret": "airflow-local-dev-secret",
   "api-secret-key": "airflow-local-dev-api-secret-key",
   "fernet-key": "YWlyZmxvdy1sb2NhbC1kZXYtZmVybmV0LWtleS0zMmI=",
+  "metadata-db-password": "postgres",
+  "metadata-connection": "postgresql://postgres:postgres@airflow-postgresql-primary:5432/postgres?sslmode=disable",
+  "replication-password": "replication-local-dev",
   "minio-root-user": "airflow-logs",
   "minio-root-password": "airflow-logs-local-dev-secret",
   "minio-logging-conn": "{\"conn_type\":\"aws\",\"login\":\"airflow-logs\",\"password\":\"airflow-logs-local-dev-secret\",\"extra\":{\"endpoint_url\":\"http://airflow-minio:9000\",\"region_name\":\"us-east-1\",\"config_kwargs\":{\"s3\":{\"addressing_style\":\"path\"}}}}"
@@ -221,6 +227,9 @@ below are this repo's local-dev literals -- replace them for anything real):
 | `client-secret` | env `AIRFLOW_KEYCLOAK_CLIENT_SECRET`, **and** substituted into `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` in the rendered realm | Airflow OAuth config + Keycloak's `airflow` client -- both sides must match |
 | `api-secret-key` | `apiSecretKeySecretName` -> env `AIRFLOW__API__SECRET_KEY` | Airflow API server |
 | `fernet-key` | `fernetKeySecretName` -> env `AIRFLOW__CORE__FERNET_KEY` | Every Airflow component, plus this chart's own sync-roles hook Job |
+| `metadata-db-password` | `postgresql.auth.existingSecret` (by reference) | The postgres StatefulSet, and `make db-failover`/`db-failback` |
+| `connection` | `data.metadataSecretName` -> env `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` | Every Airflow component, plus this chart's own sync-roles hook Job. The full DSN, assembled in `vault/seed-secrets.sh` |
+| `replication-password` | `postgresql.auth.existingSecret` (by reference) | Streaming replication between primary and the two read replicas |
 | `minio-root-user` | env `MINIO_ROOT_USER` via `secretKeyRef` | `minio/minio.yaml` (server + bucket Job) |
 | `minio-root-password` | env `MINIO_ROOT_PASSWORD` via `secretKeyRef` | same |
 | `minio-logging-conn` | env `AIRFLOW_CONN_MINIO_S3` | Airflow remote logging (`remote_log_conn_id: minio_s3`) |
@@ -239,6 +248,9 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv put secret/airflow-plat
   client-secret='airflow-local-dev-secret' \
   api-secret-key='airflow-local-dev-api-secret-key' \
   fernet-key='YWlyZmxvdy1sb2NhbC1kZXYtZmVybmV0LWtleS0zMmI=' \
+  metadata-db-password='postgres' \
+  metadata-connection='postgresql://postgres:postgres@airflow-postgresql-primary:5432/postgres?sslmode=disable' \
+  replication-password='replication-local-dev' \
   minio-root-user='airflow-logs' \
   minio-root-password='airflow-logs-local-dev-secret' \
   minio-logging-conn='{"conn_type":"aws","login":"airflow-logs","password":"airflow-logs-local-dev-secret","extra":{"endpoint_url":"http://airflow-minio:9000","region_name":"us-east-1","config_kwargs":{"s3":{"addressing_style":"path"}}}}'
@@ -302,6 +314,49 @@ On an install that predates this, the chart's old `airflow-fernet-key`
 Secret lingers unused -- hook resources are not part of the release
 manifest, so `helm upgrade` does not garbage-collect it. Deleting it is safe
 once every component reads the value from `vault-airflow-secrets`.
+
+### The metadata-database credentials
+
+Two keys, both pure Secret references -- no database credential reaches Helm
+as a value:
+
+```yaml
+postgresql:
+  auth:
+    existingSecret: "vault-airflow-secrets"
+    secretKeys:
+      adminPasswordKey: "metadata-db-password"
+      replicationPasswordKey: "replication-password"
+data:
+  metadataSecretName: "vault-airflow-secrets"
+```
+
+`secretKeys` is what makes the first one work against a Secret not designed
+for it -- bitnami looks for `postgres-password` / `replication-password` by
+default, and this remaps the lookups onto our own key names. With it set,
+the subchart stops rendering its own `airflow-postgresql` Secret and both
+StatefulSets read `vault-airflow-secrets` directly.
+
+`data.metadataSecretName` covers the other side: Airflow's own DSN, under the
+key `connection` (the name the chart looks for). The DSN is assembled in
+`vault/seed-secrets.sh` from the password plus the host/port/db, so those
+never have to be repeated in `chart/values.yaml`.
+
+This is only possible because there is **no PgBouncer** (see
+[Metadata database](#metadata-database)). The chart builds PgBouncer's
+`users.txt` from the *literal* Helm value `data.metadataConnection.pass`,
+with no Secret-reference equivalent -- so with PgBouncer enabled that
+password has to reach Helm as a value no matter where it is stored, which
+means a generated values file, a Helm plugin, or taking ownership of
+`pgbouncer.ini` via `pgbouncer.configSecretName`. Dropping the pooler
+removes the problem instead of working around it.
+
+**Rotating is not a matter of editing the value.** `bitnami/postgresql`
+applies the password only at *first* init: changing it against an existing
+PVC leaves the running database on the old password, and the next deploy
+simply breaks authentication. To rotate for real, `ALTER USER` inside the
+running primary first, or delete the postgresql PVCs and let it re-init
+(which destroys the metadata DB).
 
 ### Adding a new secret
 
@@ -497,25 +552,71 @@ pytest
 ## Metadata database
 
 The chart's bundled `postgresql` subchart runs in **replication** mode --
-1 primary + 2 read replicas, streaming replication -- behind the chart's own
-**PgBouncer**, which every Airflow component connects through
+1 primary + 2 read replicas, streaming replication. Every Airflow component
+connects **directly** to the primary Service; there is no connection pooler
 (`airflow.postgresql` / `airflow.pgbouncer` in `chart/values.yaml`):
 
 ```
-Airflow (scheduler, workers, api-server, ...) -> airflow-pgbouncer
-                                                      |
-                                          airflow-postgresql-primary  (Service)
-                                                      |
-                                       airflow-postgresql-primary-0   (writable)
-                                            |                    |
-                          airflow-postgresql-read-0    airflow-postgresql-read-1
+Airflow (scheduler, workers, api-server, ...)
+                     |
+         airflow-postgresql-primary  (Service)
+                     |
+      airflow-postgresql-primary-0   (writable)
+             |                    |
+airflow-postgresql-read-0   airflow-postgresql-read-1
 ```
 
-PgBouncer pools connections (Airflow opens one per scheduler, worker
-process, triggerer, dag-processor, **and per running task**, which is what
-exhausts `max_connections` first). The replicas are for **failover only** --
-Airflow is write-heavy and does not route reads to standbys, so they carry
-no query load.
+The replicas are for **failover only** -- Airflow is write-heavy and does
+not route reads to standbys, so they carry no query load.
+
+### No connection pooler
+
+`airflow.pgbouncer.enabled` is `false`, which is a deliberate trade-off in
+both directions.
+
+**What it costs.** Airflow opens a connection per scheduler, per worker
+process, per triggerer, per dag-processor, **and per running task** -- and
+with nothing pooling in front, all of them land on Postgres directly.
+`max_connections` is the ceiling that gets hit first, so it is raised from
+the stock 100 -- on the primary **and on the read replicas**:
+
+```yaml
+extendedConfiguration: |
+  max_connections = 500
+```
+
+The replicas need it too because a replica is a promotion target: after
+`pg_promote` it *is* the primary, and leaving it at 100 would mean
+surviving the failover only to exhaust connections minutes later, with no
+way to reconfigure it mid-incident without another restart.
+
+Postgres forks a process per connection (~5-10MB each), so this is also a
+memory budget -- 500 x ~8MB is roughly 4Gi worst case, which is what the
+`resources.limits.memory` on both StatefulSets is sized for. Raising
+`max_connections` without raising that just moves the failure from "too
+many clients" to an OOMKill. Memory limits but no CPU limits, matching the
+worker classes: a CPU limit only buys throttling, and the database is the
+one thing here that should never be throttled.
+
+Size all of this against real worker concurrency -- roughly
+`(workers x worker_concurrency) + ~15` for the always-on components -- not
+against this repo's demo numbers. If you push concurrency up, these are the
+first things to revisit.
+
+**What it buys.** The metadata credential becomes a pure Secret reference.
+The chart renders PgBouncer's `users.txt` from the *literal* Helm value
+`data.metadataConnection.pass`, and there is no values key pointing that at
+a Secret -- so with PgBouncer enabled the password must reach Helm as a
+value, whatever it is stored in. Keeping it out of tracked YAML then needs
+a generated values file, a Helm plugin, or taking ownership of the whole
+`pgbouncer.ini` through `pgbouncer.configSecretName`. Every one of those is
+machinery in the deploy path. Dropping the pooler removes the problem
+rather than working around it, and `data.metadataSecretName` then covers
+the whole DSN in one reference -- see
+[The metadata-database credentials](#the-metadata-database-credentials).
+
+To put a pooler back, set `pgbouncer.enabled: true` and be ready to supply
+`data.metadataConnection.pass` as a Helm value again.
 
 ### Failover and failback runbook
 
@@ -552,7 +653,7 @@ make db-failover        # postgres/failover.sh
 | 1 | **Fence the old primary** -- scale its StatefulSet to 0, wait for the pod to go | `pg_promote` does **not** stop the old primary. Skip this and you get a real split brain: verified here, the old primary kept accepting `INSERT`s the promoted node never saw, while the other replica went on streaming from it |
 | 2 | **Pick the target** -- compare `pg_last_wal_replay_lsn()` across the `read-*` pods, take the highest | Least data loss |
 | 3 | **Promote** -- `pg_promote(wait => true)`, poll until `pg_is_in_recovery() = f` | Makes it genuinely writable |
-| 4 | **Repoint the Service selector** -- `airflow-postgresql-primary` -> that pod | PgBouncer follows, so **Airflow's connection string never changes** (`data.metadataConnection.host` stays `airflow-postgresql-primary`) |
+| 4 | **Repoint the Service selector** -- `airflow-postgresql-primary` -> that pod | Every component connects to that Service by name, so **Airflow's connection string never changes** (the DSN in Vault keeps pointing at `airflow-postgresql-primary`) |
 | 5 | **Restart the Airflow tier** | Drops stale connections now instead of waiting for `pool_pre_ping` |
 
 Options: `TARGET=airflow-postgresql-read-0` to force a specific replica;
@@ -618,10 +719,13 @@ will:
 * scale the fenced StatefulSet back to 1, starting a stale `primary-0` that
   CrashLoopBackOffs on `could not locate a valid checkpoint record`.
 
-And **the outage is latent**: PgBouncer holds already-established server
-connections, so `airflow db check` still passes right after the upgrade --
-it only breaks on the next PgBouncer restart, which is much harder to
-diagnose than an immediate failure. All of this was reproduced here.
+With PgBouncer in front this used to be *latent* -- it held already
+established server connections, so `airflow db check` still passed right
+after the upgrade and the failure only surfaced on the next PgBouncer
+restart, which was much harder to diagnose. Without a pooler the breakage
+is immediate instead: the Service has no endpoints, so the next connection
+from any component fails outright. Louder, and easier to attribute. (The
+latent behaviour was reproduced here before the pooler was removed.)
 
 So: does the primary have to go back to being the primary? **Yes** -- not
 for correctness (the promoted node is a real primary and Airflow is happy
