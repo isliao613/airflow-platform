@@ -13,14 +13,14 @@ CHART_UPSTREAM_URL  := https://airflow.apache.org
 CHART_OCI_NAMESPACE := oci://registry-1.docker.io/isliao613
 CHART_OCI_REPO      := $(CHART_OCI_NAMESPACE)/airflow
 CHART_VERSION   := 1.22.0
-AIRFLOW_VERSION := 3.3.0
+AIRFLOW_VERSION := 3.3.1
 # Single source of truth for the image. `build`/`load` tag from these, and
 # `deploy` renders them into the chart values (see RENDERED_VALUES below), so
 # the image that gets built and the one the pods actually run can't drift
 # apart. Bump the revision suffix (.1, .2, ...) each time the Dockerfile picks
 # up a new CVE fix.
 IMAGE_REPO      := isliao613/airflow
-IMAGE_TAG       := 3.3.0-hardened.1
+IMAGE_TAG       := 3.3.1-hardened.1
 IMAGE           := $(IMAGE_REPO):$(IMAGE_TAG)
 KEYCLOAK_IMAGE  := keycloak/keycloak:26.7.2
 # Dev-mode Vault holding this repo's local secret values (see
@@ -65,7 +65,7 @@ KUBECTL         := kubectl --context $(KUBE_CONTEXT)
 KUBENS          := $(KUBECTL) --namespace $(NAMESPACE)
 
 .PHONY: up down build load push deploy dep-build cluster cluster-down namespace sso vault minio \
-        db-failover db-failback status ui logs clean chart-pull chart-push whoami
+        db-failover db-failback test status ui logs clean chart-pull chart-push whoami
 
 up: cluster sso deploy ## Create the cluster, deploy Keycloak + Airflow, wire up permissions (one-click)
 
@@ -199,6 +199,21 @@ deploy: load namespace vault minio dep-build ## Build, load, and install/upgrade
 	@echo "  bob   / bob   -> airflow-team-b -> sees team_b_pipeline only"
 	@echo "  carol / carol -> airflow-team-c -> sees team_c_pipeline only"
 	@echo "  admin / admin -> airflow-admins -> sees all three (Airflow Admin)"
+
+test: build ## Run the dags/ unit tests inside the hardened image (has Airflow 3.3.1 + the DAGs)
+	@# No local Airflow needed: pytest runs in the same image the cluster runs,
+	@# which already has Airflow and the DAGs at /opt/airflow/dags. tests/ is
+	@# NOT in the image (the Dockerfile only COPYs dags/), so it is mounted
+	@# here, along with chart/ for the roles.json / values.yaml cross-checks.
+	@# Executor is set so hello_kubernetes' task-level
+	@# executor="KubernetesExecutor" resolves during DAG parsing.
+	docker run --rm \
+		-e AIRFLOW__CORE__EXECUTOR="CeleryExecutor,KubernetesExecutor" \
+		-v "$(PWD)/tests:/opt/airflow/tests:ro" \
+		-v "$(PWD)/pytest.ini:/opt/airflow/pytest.ini:ro" \
+		-v "$(PWD)/chart:/opt/airflow/chart:ro" \
+		--entrypoint bash \
+		$(IMAGE) -c "pip install --quiet --no-cache-dir 'pytest>=8,<9' && cd /opt/airflow && python -m pytest"
 
 status: ## Show pod status
 	$(KUBENS) get pods

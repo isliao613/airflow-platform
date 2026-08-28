@@ -1,0 +1,15 @@
+# Dependencies for the dags/ unit tests (tests/). The heavy one is
+# Airflow itself -- pin it to the version the platform runs (AIRFLOW_VERSION
+# in the Makefile, and the Dockerfile's base image) so the DagBag that parses
+# these DAGs in CI behaves like the one in the cluster. Install against
+# Airflow's published constraints, e.g.:
+#
+#   pip install -r tests/requirements.txt \
+#     -c "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.10.txt"
+#
+# Or skip the local install entirely and run `make test`, which runs this
+# suite inside the already-built hardened image (Airflow + the DAGs included).
+apache-airflow==3.3.1
+apache-airflow-providers-cncf-kubernetes
+pytest>=8,<9
+pyyaml
