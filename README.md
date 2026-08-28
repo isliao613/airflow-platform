@@ -94,9 +94,10 @@ post-install/post-upgrade hook Job defined directly in this repo's own
 umbrella chart. It's installed as part of the same Helm release as the
 airflow dependency (Helm merges hooks from a root chart and its dependencies
 into one ordering for the release), so it can read that release's own
-secrets (`airflow-metadata`, `airflow-fernet-key`) and `airflow.cfg`
-(`airflow-config`, needed because that's where `auth_manager` is set)
-directly via `.Release.Name` -- no separate config needed. It waits for the
+secrets (`airflow-metadata`, and the Fernet key -- now
+`vault-airflow-secrets`, see [The Fernet key](#the-fernet-key)) and
+`airflow.cfg` (`airflow-config`, needed because that's where `auth_manager`
+is set) directly via `.Release.Name` -- no separate config needed. It waits for the
 dag processor to serialize the DAG files (`sync-perm` reads `access_control`
 from the serialized DAGs in the database, not from the files on disk), then
 runs `airflow roles import` and `airflow sync-perm --include-dags`. Helm
@@ -165,8 +166,8 @@ themselves (adding/removing users or groups) through the Keycloak console.
 ## Secrets in Vault
 
 The secrets Airflow itself needs to function -- the OIDC client secret,
-Airflow's API secret key, and the MinIO credentials + connection for remote
-task logging -- live in a dev-mode Vault (`vault/vault.yaml`) instead of
+Airflow's API secret key, the Fernet key, and the MinIO credentials +
+connection for remote task logging -- live in a dev-mode Vault (`vault/vault.yaml`) instead of
 being a literal value in tracked chart/SSO YAML, held together as one Vault
 secret (`secret/airflow-platform/airflow`) since they all belong to the
 same release. `vault/seed-secrets.sh` is the single source of truth for
@@ -175,9 +176,10 @@ file instead of scattered across two); `vault/sync-secrets.sh` reads them
 back out and:
 
 - Creates one Kubernetes Secret -- `vault-airflow-secrets`, with keys
-  `client-secret`, `api-secret-key`, `minio-root-user`,
+  `client-secret`, `api-secret-key`, `fernet-key`, `minio-root-user`,
   `minio-root-password` and `minio-logging-conn` -- consumed via the airflow
-  chart's own `apiSecretKeySecretName` / top-level `secret:` list
+  chart's own `apiSecretKeySecretName` / `fernetKeySecretName` / top-level
+  `secret:` list
   (`chart/values.yaml`) and by `minio/minio.yaml`,
   the same mechanism the chart already uses for its own metadata/fernet-key
   secrets. Named `vault-*` and deliberately not `airflow-*`: a Secret sharing
@@ -200,13 +202,14 @@ Airflow-side here.
 
 ### What's in the secret
 
-`secret/airflow-platform/airflow` holds exactly these five keys (the values
+`secret/airflow-platform/airflow` holds exactly these six keys (the values
 below are this repo's local-dev literals -- replace them for anything real):
 
 ```json
 {
   "client-secret": "airflow-local-dev-secret",
   "api-secret-key": "airflow-local-dev-api-secret-key",
+  "fernet-key": "YWlyZmxvdy1sb2NhbC1kZXYtZmVybmV0LWtleS0zMmI=",
   "minio-root-user": "airflow-logs",
   "minio-root-password": "airflow-logs-local-dev-secret",
   "minio-logging-conn": "{\"conn_type\":\"aws\",\"login\":\"airflow-logs\",\"password\":\"airflow-logs-local-dev-secret\",\"extra\":{\"endpoint_url\":\"http://airflow-minio:9000\",\"region_name\":\"us-east-1\",\"config_kwargs\":{\"s3\":{\"addressing_style\":\"path\"}}}}"
@@ -217,6 +220,7 @@ below are this repo's local-dev literals -- replace them for anything real):
 |-----|-------------|----|
 | `client-secret` | env `AIRFLOW_KEYCLOAK_CLIENT_SECRET`, **and** substituted into `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` in the rendered realm | Airflow OAuth config + Keycloak's `airflow` client -- both sides must match |
 | `api-secret-key` | `apiSecretKeySecretName` -> env `AIRFLOW__API__SECRET_KEY` | Airflow API server |
+| `fernet-key` | `fernetKeySecretName` -> env `AIRFLOW__CORE__FERNET_KEY` | Every Airflow component, plus this chart's own sync-roles hook Job |
 | `minio-root-user` | env `MINIO_ROOT_USER` via `secretKeyRef` | `minio/minio.yaml` (server + bucket Job) |
 | `minio-root-password` | env `MINIO_ROOT_PASSWORD` via `secretKeyRef` | same |
 | `minio-logging-conn` | env `AIRFLOW_CONN_MINIO_S3` | Airflow remote logging (`remote_log_conn_id: minio_s3`) |
@@ -234,6 +238,7 @@ does -- `kv put` replaces the whole secret, so every key goes in one call):
 kubectl -n airflow exec deploy/airflow-vault -- vault kv put secret/airflow-platform/airflow \
   client-secret='airflow-local-dev-secret' \
   api-secret-key='airflow-local-dev-api-secret-key' \
+  fernet-key='YWlyZmxvdy1sb2NhbC1kZXYtZmVybmV0LWtleS0zMmI=' \
   minio-root-user='airflow-logs' \
   minio-root-password='airflow-logs-local-dev-secret' \
   minio-logging-conn='{"conn_type":"aws","login":"airflow-logs","password":"airflow-logs-local-dev-secret","extra":{"endpoint_url":"http://airflow-minio:9000","region_name":"us-east-1","config_kwargs":{"s3":{"addressing_style":"path"}}}}'
@@ -256,6 +261,47 @@ purely so you can browse the Vault UI directly.
 
 To change a secret value: edit `vault/seed-secrets.sh`, then `make vault` (or
 `make sso`/`make deploy`, which both depend on it).
+
+### The Fernet key
+
+`fernet-key` is the one entry here that is **not** interchangeable with a
+fresh random string. It encrypts Connection passwords and sensitive
+Variables in the metadata DB, so **changing it makes everything already
+encrypted undecryptable** (`InvalidToken`) -- unlike `api-secret-key`, where
+rotating only forces everyone to log in again.
+
+It must be 32 bytes, url-safe-base64-encoded; an arbitrary string like the
+other literals here would be rejected. This repo's value decodes to the
+readable `airflow-local-dev-fernet-key-32b` so it still reads as an obvious
+local-dev value. Generate a real one with:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+To rotate one that already has encrypted data behind it, set
+`AIRFLOW__CORE__FERNET_KEY="<new>,<old>"` (new first, old still able to
+decrypt), re-encrypt, then drop the old one -- do not edit it in place.
+
+Left unset, the chart would render its own `<release>-fernet-key` Secret
+with a `randAlphaNum 32 | b64enc` value. That is already stable across
+upgrades -- its template is a `pre-install` hook, so it is generated once --
+so sourcing it from Vault is not about idempotency the way
+`apiSecretKeySecretName` is; it is about the value living with the rest and
+being knowable rather than a random string only the cluster has ever seen.
+
+Two things follow from the chart only letting you name the Secret, not the
+key inside it (the key is hardcoded as `fernet-key`):
+
+* `vault/seed-secrets.sh` must use exactly that key name; and
+* `chart/templates/sync-roles-job.yaml` reads the same value, so it follows
+  `airflow.fernetKeySecretName` too rather than hardcoding
+  `<release>-fernet-key`.
+
+On an install that predates this, the chart's old `airflow-fernet-key`
+Secret lingers unused -- hook resources are not part of the release
+manifest, so `helm upgrade` does not garbage-collect it. Deleting it is safe
+once every component reads the value from `vault-airflow-secrets`.
 
 ### Adding a new secret
 

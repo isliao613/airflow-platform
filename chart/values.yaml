@@ -121,6 +121,25 @@ airflow:
   # `airflow-`-prefixed name.
   apiSecretKeySecretName: "vault-airflow-secrets"
 
+  # Same deal for the Fernet key, which encrypts Connection passwords and
+  # sensitive Variables in the metadata DB. Unset, the chart renders its own
+  # `<release>-fernet-key` Secret with a `randAlphaNum 32 | b64enc` value.
+  # That one is already stable across upgrades (its template is a pre-install
+  # hook, so it is generated once), so this is not about idempotency like
+  # apiSecretKeySecretName above -- it is about the value living in Vault
+  # with the rest, and being knowable rather than a random string only the
+  # cluster has ever seen.
+  #
+  # The chart only lets us name the Secret; the key inside it is hardcoded as
+  # `fernet-key` (see the chart's _helpers.yaml), which is why
+  # vault/seed-secrets.sh must use exactly that key name.
+  #
+  # NOTE: the chart's own pre-install hook Secret `airflow-fernet-key` is not
+  # garbage-collected when this is set (hook resources are not part of the
+  # release manifest), so on an existing install it lingers, unused. Deleting
+  # it is safe once every component reads the value from here.
+  fernetKeySecretName: "vault-airflow-secrets"
+
   # Exposes AIRFLOW_KEYCLOAK_CLIENT_SECRET (read by apiServerConfig below) as
   # an env var on every Airflow container, sourced from the same
   # vault-airflow-secrets Secret as apiSecretKeySecretName above (a

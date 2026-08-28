@@ -42,11 +42,26 @@ MINIO_CONN=$(cat <<EOF
 EOF
 )
 
+# Airflow's Fernet key encrypts Connection passwords and sensitive Variables
+# in the metadata DB. Must be 32 bytes, url-safe-base64-encoded -- an
+# arbitrary string like the values above would be rejected. This one decodes
+# to the readable "airflow-local-dev-fernet-key-32b" so it is obviously a
+# local-dev value, same spirit as the literals above. Generate a real one
+# with:
+#   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#
+# ROTATING THIS IS NOT LIKE THE OTHERS: changing it makes every already
+# encrypted Connection/Variable in the database undecryptable
+# (InvalidToken). Rotate via AIRFLOW__CORE__FERNET_KEY="new,old" and
+# re-encrypt, not by editing this in place.
+FERNET_KEY="YWlyZmxvdy1sb2NhbC1kZXYtZmVybmV0LWtleS0zMmI="
+
 "${KUBECTL[@]}" exec deploy/airflow-vault -- vault kv put secret/airflow-platform/airflow \
   client-secret="airflow-local-dev-secret" \
   api-secret-key="airflow-local-dev-api-secret-key" \
+  fernet-key="$FERNET_KEY" \
   minio-root-user="$MINIO_USER" \
   minio-root-password="$MINIO_PASS" \
   minio-logging-conn="$MINIO_CONN" >/dev/null
 
-echo "vault/seed-secrets.sh: seeded secret/airflow-platform/airflow (client-secret, api-secret-key, minio-root-user, minio-root-password, minio-logging-conn)"
+echo "vault/seed-secrets.sh: seeded secret/airflow-platform/airflow (client-secret, api-secret-key, fernet-key, minio-root-user, minio-root-password, minio-logging-conn)"

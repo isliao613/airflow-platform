@@ -44,6 +44,7 @@ get() {
 
 OIDC_SECRET=$(get client-secret)
 API_SECRET_KEY=$(get api-secret-key)
+FERNET_KEY=$(get fernet-key)
 MINIO_USER=$(get minio-root-user)
 MINIO_PASS=$(get minio-root-password)
 MINIO_CONN=$(get minio-logging-conn)
@@ -54,6 +55,7 @@ MINIO_CONN=$(get minio-logging-conn)
 "${KUBECTL[@]}" create secret generic vault-airflow-secrets \
   --from-literal=client-secret="$OIDC_SECRET" \
   --from-literal=api-secret-key="$API_SECRET_KEY" \
+  --from-literal=fernet-key="$FERNET_KEY" \
   --from-literal=minio-root-user="$MINIO_USER" \
   --from-literal=minio-root-password="$MINIO_PASS" \
   --from-literal=minio-logging-conn="$MINIO_CONN" \
@@ -64,4 +66,4 @@ sed \
   -e "s|VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER|$OIDC_SECRET|g" \
   "$REALM_FILE" > "$REALM_RENDERED"
 
-echo "vault/sync-secrets.sh: synced Kubernetes Secret vault-airflow-secrets (client-secret, api-secret-key, minio-root-user, minio-root-password, minio-logging-conn) and rendered $REALM_RENDERED"
+echo "vault/sync-secrets.sh: synced Kubernetes Secret vault-airflow-secrets (client-secret, api-secret-key, fernet-key, minio-root-user, minio-root-password, minio-logging-conn) and rendered $REALM_RENDERED"

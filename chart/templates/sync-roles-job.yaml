@@ -31,7 +31,9 @@
 # Job can read its secrets/ConfigMap directly (confirmed against a live
 # apache-airflow chart 1.22.0 deploy):
 #   - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN <- secret "<release>-metadata" key "connection"
-#   - AIRFLOW__CORE__FERNET_KEY           <- secret "<release>-fernet-key" key "fernet-key"
+#   - AIRFLOW__CORE__FERNET_KEY           <- secret named by airflow.fernetKeySecretName
+#                                            (vault-airflow-secrets), falling back to
+#                                            "<release>-fernet-key"; key "fernet-key"
 #   - /opt/airflow/airflow.cfg            <- configmap "<release>-config" key "airflow.cfg"
 # The airflow.cfg mount is not optional: it's where the chart sets
 # `[core] auth_manager = ...FabAuthManager`. Without it, `airflow roles
@@ -104,7 +106,7 @@ spec:
             - name: AIRFLOW__CORE__FERNET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-fernet-key
+                  name: {{ .Values.airflow.fernetKeySecretName | default (printf "%s-fernet-key" .Release.Name) }}
                   key: fernet-key
           volumeMounts:
             - name: airflow-config
