@@ -1,26 +1,25 @@
-"""Test bootstrap for the dags/ suite.
+"""Test bootstrap AND shared helpers for the dags/ unit suite.
 
-Module-level code here runs before any test module imports Airflow, so the
-environment the DagBag sees matches the cluster:
+Everything the suite needs that is not itself a test lives here: the
+pre-import environment setup, the session DagBag fixtures, and the
+pure-Python helpers (project discovery, DagBag slicing, access_control
+flattening). Test files import the helpers with ``from tests.conftest
+import ...``. The suite reads only ``dags/`` and each project's
+``tests/test_<project>/manifest.py`` -- never the Helm chart.
 
-  * examples off;
-  * the Airflow-3 multi-executor from chart/values.yaml configured, so
-    hello_kubernetes' task-level ``executor="KubernetesExecutor"`` resolves
-    during parsing instead of raising;
-  * AIRFLOW_HOME on a throwaway temp dir (only used when there is no real
-    one, e.g. a local venv -- inside the image AIRFLOW_HOME is already set);
-  * dags/ on sys.path, the same as the real dag processor, so
-    ``from <project>.common.greetings import ...`` resolves from a DAG file
-    and from the per-project greetings tests alike.
+Module-level code runs before any test imports Airflow, so the DagBag sees
+the same environment as the cluster: examples off, the Airflow-3
+multi-executor configured (so hello_kubernetes' task-level
+``executor="KubernetesExecutor"`` resolves during parsing), AIRFLOW_HOME on
+a throwaway dir, and ``dags/`` on ``sys.path`` (so ``from
+<project>.common.greetings import ...`` resolves from a DAG file and from the
+per-project greetings tests alike).
 
-One DagBag is built over the WHOLE of dags/ (every project) and shared for
-the session; ``tests.dagtest_util.dags_in_project`` slices it per project.
-
-No container needed: if ``apache-airflow`` is not importable, the ``dagbag``
-fixture (and everything that depends on it) is SKIPPED rather than erroring,
-so a bare ``pip install pytest && pytest`` still runs every check that does
-not need a DagBag -- the per-project ``common.greetings`` unit tests and the
-project<->tests layout guard. Install ``tests/requirements.txt`` (or run
+No container needed: if ``apache-airflow`` is not importable the ``dagbag``
+fixture (and everything downstream of it) is SKIPPED rather than erroring,
+so a bare ``pip install pytest && pytest`` still runs the container-free
+subset -- the per-project ``common.greetings`` unit tests and the ``dags/``
+<-> ``tests/`` layout guard. Install ``tests/requirements.txt`` (or run
 ``make test`` in the image) for the full suite.
 
 tests/ sits beside dags/, not inside it, so the Dockerfile's ``COPY dags/``
@@ -34,14 +33,24 @@ import importlib.util
 import os
 import sys
 import tempfile
+from pathlib import Path
 
-from tests.dagtest_util import DAGS_DIR
+# tests/ sits at the repo root, next to dags/. In the `make test` container it
+# is mounted at /opt/airflow/tests, so REPO_ROOT resolves to /opt/airflow --
+# where the DAGs (baked in) live too.
+TESTS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = TESTS_DIR.parent
+DAGS_DIR = REPO_ROOT / "dags"
+
+_NON_PROJECT_DIRS = {"__pycache__"}
 
 try:
     _HAS_AIRFLOW = importlib.util.find_spec("airflow") is not None
 except (ImportError, ValueError):  # pragma: no cover - defensive
     _HAS_AIRFLOW = False
 
+
+# --- pre-import environment (must run before any `import airflow`) ----------
 sys.path.insert(0, str(DAGS_DIR))
 
 os.environ.setdefault("AIRFLOW_HOME", tempfile.mkdtemp(prefix="airflow-test-home-"))
@@ -53,6 +62,65 @@ os.environ.setdefault("AIRFLOW__CORE__UNIT_TEST_MODE", "True")
 import pytest  # noqa: E402  (must follow the env setup above)
 
 
+# --- pure-Python helpers (no Airflow import) -------------------------------
+def discover_dag_projects() -> set[str]:
+    """Every project package under dags/ (a directory with an __init__.py)."""
+    return {
+        p.name
+        for p in DAGS_DIR.iterdir()
+        if p.is_dir()
+        and p.name not in _NON_PROJECT_DIRS
+        and (p / "__init__.py").is_file()
+    }
+
+
+def discover_test_projects() -> set[str]:
+    """Every tests/test_<project>/ package that carries a manifest.py."""
+    return {
+        p.name[len("test_"):]
+        for p in TESTS_DIR.iterdir()
+        if p.is_dir() and p.name.startswith("test_") and (p / "manifest.py").is_file()
+    }
+
+
+def project_of(fileloc: str) -> str:
+    """The project a parsed DAG belongs to, taken from its file path."""
+    return Path(fileloc).resolve().relative_to(DAGS_DIR).parts[0]
+
+
+def dags_in_project(dags: dict, project: str) -> dict:
+    """Subset of a DagBag's {dag_id: DAG} that lives under dags/<project>/."""
+    return {d_id: d for d_id, d in dags.items() if project_of(d.fileloc) == project}
+
+
+def dag_source_files(project: str) -> list[Path]:
+    """Top-level DAG modules in dags/<project>/ (excludes __init__ and common/)."""
+    return sorted(
+        p for p in (DAGS_DIR / project).glob("*.py") if p.name != "__init__.py"
+    )
+
+
+def flatten_access_control(dag) -> dict[str, set[str]]:
+    """Normalise DAG.access_control to {role: {permission, ...}}.
+
+    Airflow accepts (and, depending on the version, stores) either
+    ``{role: {perms}}`` or the expanded ``{role: {resource: {perms}}}`` form.
+    Collapse both to a flat permission set so assertions don't depend on which
+    one this Airflow keeps.
+    """
+    out: dict[str, set[str]] = {}
+    for role, entry in (getattr(dag, "access_control", None) or {}).items():
+        if isinstance(entry, dict):
+            perms: set[str] = set()
+            for value in entry.values():
+                perms |= set(value)
+            out[role] = perms
+        else:
+            out[role] = set(entry)
+    return out
+
+
+# --- fixtures -------------------------------------------------------------
 def _format_import_errors(errors: dict) -> str:
     lines = ["DagBag import errors:"]
     for path, msg in errors.items():

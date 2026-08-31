@@ -560,20 +560,20 @@ run cover it.
 
 Its layout mirrors `dags/`: one `tests/test_<project>/` package per project,
 each with a `manifest.py` (exactly what that project ships) and thin test
-files. The shared machinery is at the top:
+files. Only three files sit at the top:
 
-- **`conftest.py`** -- builds ONE `DagBag` over all of `dags/` for the
-  session; `dagtest_util.dags_in_project` slices it per project.
-- **`dagtest_util.py`** -- pure helpers (no Airflow import): project
-  discovery, `access_control` flattening.
-- **`_dag_checks.py`** -- the generic per-project contract, driven by a
-  project's `manifest.py`. `test_<project>/test_dags.py` is a byte-identical
-  thin wrapper in every project.
+- **`conftest.py`** -- the bootstrap (env setup + the session `DagBag`
+  fixtures) *and* the shared pure-Python helpers (project discovery,
+  `dags_in_project`, `access_control` flattening); test files import them
+  with `from tests.conftest import ...`.
+- **`__init__.py`** -- empty; makes `tests/` a package so those imports and
+  the per-project `from . import manifest` resolve.
 - **`test_projects_global.py`** -- cross-project invariants: every
   `dags/<project>/` has a matching `tests/test_<project>/manifest.py`, and
   the manifests account for every parsed DAG with no `dag_id` claimed twice.
 
-Per project, `test_dags.py` covers: `DagBag` parses with zero import errors
+Per project, `test_dags.py` (byte-identical everywhere, driven by that
+project's `manifest.py`) covers: `DagBag` parses with zero import errors
 (which also proves that project's `common/` ships and imports), the DAG set
 matches `EXPECTED_DAG_IDS` one-per-source-file, each `TEAM_DAG_ROLE` DAG
 grants exactly its own role `{can_read, can_edit}` (read straight off the

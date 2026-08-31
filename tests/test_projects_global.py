@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import importlib
 
-from tests.dagtest_util import (
+from tests.conftest import (
     discover_dag_projects,
     discover_test_projects,
     project_of,

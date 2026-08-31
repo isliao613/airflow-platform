@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.dagtest_util import dags_in_project
+from tests.conftest import dags_in_project
 
 from . import manifest as m
 
