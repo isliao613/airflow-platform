@@ -1,7 +1,7 @@
 # The reconcile logic for the sync-roles hook Job. This is chart-owned
 # code, not operator data, so it always ships from this chart's own files/
 # -- independent of teamRoles.configMapName (which only controls where
-# roles.json comes from). See values.yaml and templates/sync-roles-job.yaml.
+# role files come from). See values.yaml and templates/sync-roles-job.yaml.
 apiVersion: v1
 kind: ConfigMap
 metadata:

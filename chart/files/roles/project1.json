@@ -1,0 +1,122 @@
+[
+  {
+    "name": "project1",
+    "resource": "Asset Aliases",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "Assets",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "Backfills",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "Browse",
+    "action": "menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "Cluster Activity",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "DAG Code",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "DAG Dependencies",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "DAG Runs",
+    "action": "can_create,can_delete,can_edit,can_read,menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "DAG Versions",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "DAG Warnings",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "DAGs",
+    "action": "menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "Docs",
+    "action": "menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "Documentation",
+    "action": "menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "HITL Detail",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "ImportError",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "Jobs",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "My Password",
+    "action": "can_edit,can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "My Profile",
+    "action": "can_edit,can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "Pools",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "SLA Misses",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "Task Instances",
+    "action": "can_create,can_delete,can_edit,can_read,menu_access"
+  },
+  {
+    "name": "project1",
+    "resource": "Task Logs",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "Website",
+    "action": "can_read"
+  },
+  {
+    "name": "project1",
+    "resource": "XComs",
+    "action": "can_read"
+  }
+]

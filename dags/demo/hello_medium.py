@@ -1,7 +1,7 @@
 """Hello world pinned to the `medium` Celery worker class.
 
 `queue="medium"` routes this to the airflow-worker-medium Deployment. Uses
-the shared helper `common.greetings.where` (see `dags/common/`). No
+the shared helper `demo.common.greetings.where` (see `dags/demo/common/`). No
 `access_control` -> only the Airflow Admin role sees it.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pendulum
 from airflow.sdk import DAG, task
 
-from common.greetings import where
+from demo.common.greetings import where
 
 with DAG(
     dag_id="hello_medium",

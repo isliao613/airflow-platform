@@ -1,6 +1,7 @@
-"""Unit tests for dags/common/greetings.py -- the shared helper every demo
-DAG imports. Pure Python: needs neither Airflow nor a DagBag, so this file
-still runs in a bare `pip install pytest` environment.
+"""Unit tests for dags/demo/common/greetings.py -- the demo project's own
+shared helper (every project has its own copy; projects are independent).
+Pure Python: needs neither Airflow nor a DagBag, so this file still runs in a
+bare `pip install pytest` environment.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ import socket
 
 import pytest
 
-from common.greetings import fail, where
+from demo.common.greetings import fail, where
 
 
 def test_where_returns_label_with_hostname(capsys):

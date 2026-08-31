@@ -308,7 +308,7 @@ airflow:
     # AUTH_ROLES_SYNC_AT_LOGIN re-reads the `groups` claim on every login and
     # rewrites the user's roles, so group membership in Keycloak is the
     # single source of truth. The team roles themselves are created by
-    # `airflow roles import` (see chart/files/roles.json) and deliberately
+    # `airflow roles import` (see chart/files/roles/demo.json) and deliberately
     # hold no global `DAGs` permission -- per-DAG access is granted only by
     # the `access_control` mapping in each DAG file.
     apiServerConfig: &webserverConfig |
@@ -338,7 +338,7 @@ airflow:
           "airflow-team-a": ["team_a"],
           "airflow-team-b": ["team_b"],
           "airflow-team-c": ["team_c"],
-          # Built-in role -- needs no entry in chart/files/roles.json. Holds
+          # Built-in role -- needs no entry in chart/files/roles/demo.json. Holds
           # global `DAGs` permission, so this group sees every team's DAG.
           "airflow-admins": ["Admin"],
       }
@@ -408,16 +408,22 @@ image:
   repository: IMAGE_REPO_PLACEHOLDER
   tag: IMAGE_TAG_PLACEHOLDER
 
-# Where the sync-roles hook Job gets roles.json from (see
-# chart/templates/sync-roles-job.yaml).
+# Where the sync-roles hook Job gets its role files from (see
+# chart/templates/sync-roles-job.yaml). The Job mounts EVERY *.json key of
+# the chosen ConfigMap under /opt/airflow/roles and reconciles their union
+# -- one file per project (demo, project1, project2, ...).
 #
-#   configMapName: ""       -> the chart renders its own bundled
-#                              files/roles.json (the demo team_a/b/c set).
-#                              This is the `make up` path: zero setup.
+#   configMapName: ""       -> the chart renders its own ConfigMap from
+#                              every files/roles/*.json in this chart (the
+#                              demo team_a/b/c set plus the project1/
+#                              project2 scaffolds). This is the `make up`
+#                              path: zero setup. Add a project by dropping
+#                              files/roles/<project>.json.
 #   configMapName: my-roles -> the Job instead mounts the existing,
-#                              operator-managed ConfigMap `my-roles` and
-#                              reads its `key`. The chart does NOT render or
-#                              own roles.json in this mode -- create/update
+#                              operator-managed ConfigMap `my-roles`; every
+#                              key of it ending in `.json` is treated as a
+#                              role file. The chart does NOT render or own
+#                              any role file in this mode -- create/update
 #                              `my-roles` out of band (kubectl apply,
 #                              Kustomize, Argo CD, ...) and re-run the hook
 #                              (any `helm upgrade`) to reconcile. A missing
@@ -427,4 +433,3 @@ image:
 # and mounts from its own chart-rendered ConfigMap regardless of this.
 teamRoles:
   configMapName: ""
-  key: roles.json

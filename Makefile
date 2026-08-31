@@ -210,7 +210,7 @@ test: build ## Run the dags/ unit tests inside the hardened image (has Airflow 3
 	@# No local Airflow needed: pytest runs in the same image the cluster runs,
 	@# which already has Airflow and the DAGs at /opt/airflow/dags. tests/ is
 	@# NOT in the image (the Dockerfile only COPYs dags/), so it is mounted
-	@# here, along with chart/ for the roles.json / values.yaml cross-checks.
+	@# here, along with chart/ for the roles/*.json / values.yaml cross-checks.
 	@# Executor is set so hello_kubernetes' task-level
 	@# executor="KubernetesExecutor" resolves during DAG parsing.
 	docker run --rm \

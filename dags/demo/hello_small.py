@@ -1,8 +1,8 @@
 """Hello world pinned to the `small` Celery worker class.
 
 `queue="small"` is also `operators.default_queue`, so a task with no queue
-at all lands here too. Uses `common.greetings.where` -- a shared module in
-`dags/common/` -- so this DAG also verifies that the common-folder import
+at all lands here too. Uses `demo.common.greetings.where` -- a shared module in
+`dags/demo/common/` -- so this DAG also verifies that the common-folder import
 resolves. No `access_control` -> only the Airflow Admin role sees it.
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 import pendulum
 from airflow.sdk import DAG, task
 
-from common.greetings import where
+from demo.common.greetings import where
 
 with DAG(
     dag_id="hello_small",

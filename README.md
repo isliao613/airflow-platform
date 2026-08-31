@@ -76,9 +76,9 @@ Airflow uses the FAB auth manager (the chart's default) with
    `team_a` role, and `AUTH_ROLES_SYNC_AT_LOGIN = True` re-applies it on
    every login -- so moving a user between groups in Keycloak takes effect on
    their next sign-in, with no action in Airflow.
-3. **Team roles hold no global DAG permission.** `chart/files/roles.json`
-   gives each team role the built-in Viewer permissions **minus** `can_read`
-   on the
+3. **Team roles hold no global DAG permission.** The per-project role files
+   under `chart/files/roles/` (e.g. `demo.json`) give each team role the
+   built-in Viewer permissions **minus** `can_read` on the
    global `DAGs` resource. That single omission is the whole mechanism:
    `FabAuthManager._is_authorized_dag()` short-circuits to "allow everything"
    for anyone holding it.
@@ -155,7 +155,7 @@ AUTH_ROLES_MAPPING = {
 }
 ```
 
-`Admin` needs no entry in `chart/files/roles.json` -- it's built into FAB
+`Admin` needs no entry in any `chart/files/roles/*.json` -- it's built into FAB
 already, with every permission on every resource. That's also the caveat:
 unlike the team roles, `Admin` holds the global `DAGs` permission, so
 `admin`/`admin` sees and can edit every team's DAG, and can manage Airflow's
@@ -423,8 +423,10 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `kind-config.yaml`          | Single-node kind cluster; NodePorts `30080`/`30081`/`30082` -> host `8080`/`8181`/`8200` |
 | `Dockerfile`                | CVE-hardened image; bakes in `dags/`                                 |
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
-| `dags/`                     | Three per-team demo DAGs (each with `access_control`), `hello_{small,medium,large,kubernetes}.py` (one per worker-class / K8s-pod placement), and `always_fails.py` |
-| `dags/common/`              | Shared helpers imported by the demo DAGs (`from common.greetings import ...`); the import doubles as a check that the folder ships in the image |
+| `dags/`                     | One folder per project (`demo/`, `project1/`, `project2/`), each a self-contained Python package -- see [Projects under `dags/`](#projects-under-dags) |
+| `dags/demo/`                | The demo project: three per-team DAGs (each with `access_control`), `hello_{small,medium,large,kubernetes}.py` (one per worker-class / K8s-pod placement), and `always_fails.py` |
+| `dags/<project>/common/`    | That project's OWN shared helpers (`from <project>.common.greetings import ...`); the import doubles as a check that the package ships in the image. Projects never import one another's `common/` |
+| `dags/project1/`, `dags/project2/` | Scaffold projects: one pipeline + one role each, showing the shape a new team folder takes |
 | `tests/`                    | `pytest` unit tests for the DAGs; sits beside `dags/`, so the image never carries them -- see [Testing the DAGs](#testing-the-dags) |
 | `sso/realm-airflow.json`    | Keycloak realm: 3 groups, 4 users, the `airflow` OIDC client -- carries a `VAULT_OIDC_CLIENT_SECRET_PLACEHOLDER` token, filled in by `vault/sync-secrets.sh`; user passwords stay literal |
 | `sso/keycloak.yaml`         | Keycloak Deployment + Service; admin login stays a literal local-dev value |
@@ -439,8 +441,9 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `chart/Chart.lock`          | Pins the resolved dependency digest; committed like a lockfile        |
 | `chart/values.yaml`         | Overrides for the `airflow` dependency (under the `airflow:` key): NodePort, api secret sourced from Vault (`apiSecretKeySecretName`), Keycloak sidecar, and the Flask-AppBuilder/Keycloak SSO config (`apiServer.apiServerConfig` / `webserver.webserverConfig`); also `image:` for this chart's own hook Job |
 | `chart/templates/sync-roles-job.yaml` | Post-install/post-upgrade hook Job that creates the team roles and applies each DAG's `access_control` |
-| `chart/templates/team-roles-configmap.yaml` | Ships `chart/files/roles.json` into the cluster for the hook Job to read |
-| `chart/files/roles.json`    | The three team roles, imported by `airflow roles import`             |
+| `chart/templates/team-roles-configmap.yaml` | Ships every `chart/files/roles/*.json` into the cluster (one ConfigMap key per project) for the hook Job to read |
+| `chart/files/roles/`        | One role file per project (`demo.json`, `project1.json`, `project2.json`), imported by `airflow roles import` and reconciled as their union |
+| `chart/files/reconcile_roles.py` | Gap-free reconcile of the merged role files against the live DB (delta only, add-before-delete, refuses FAB built-ins) |
 
 ## Targets
 
@@ -477,62 +480,106 @@ that, running `make up` against an already-existing cluster while your
 current-context pointed elsewhere would deploy Airflow to that other cluster.
 `make whoami` prints what the targets will act on.
 
-## Adding or changing a DAG
+## Projects under `dags/`
+
+`dags/` is not a flat pile of files -- it holds one folder per project, and
+each folder is a self-contained Python package:
+
+```
+dags/
+  demo/                     # __init__.py -> importable as `demo`
+    common/                 # demo's OWN shared helpers
+      __init__.py
+      greetings.py
+    team_a_pipeline.py      # from demo.common.greetings import where
+    ...
+  project1/
+    common/greetings.py     # project1's OWN copy -- independent of demo's
+    project1_pipeline.py    # from project1.common.greetings import where
+  project2/
+    ...
+```
+
+`dags/` itself is on `sys.path` (the dag processor puts it there), and every
+project folder has an `__init__.py`, so imports are **project-prefixed**:
+`from project1.common.greetings import ...`. That prefix is what keeps two
+projects' `common/` packages from colliding -- they are genuinely different
+modules (`demo.common` vs `project1.common`), and a project may change or
+delete its own `common/` without touching any other.
+
+The `import` also doubles as a liveness check: every pipeline imports its
+project's `common`, so if that package went missing from the image or broke,
+each importer would surface in `airflow dags list-import-errors` rather than
+failing silently at run time. Keep non-DAG modules under `common/` (or
+another subpackage), never loose in a project folder -- the processor parses
+every top-level `.py` there looking for DAG objects.
+
+### Adding or changing a DAG
 
 DAGs ship inside the image, so there is no DAG volume, no gitSync, and nothing
 to mount:
 
-1. Add or edit a file in `dags/`, with an `access_control` entry naming a team
-   role.
-2. `make up` (or `make deploy`).
+1. Add or edit a file under `dags/<project>/`, with an `access_control` entry
+   naming a role defined in `chart/files/roles/<project>.json`.
+2. Update that project's manifest at `tests/test_<project>/manifest.py`
+   (`EXPECTED_DAG_IDS`, and `TEAM_DAG_ROLE` / `QUEUE_DAG_CLASS` /
+   `NO_ACL_DAG_IDS` as applicable) -- the tests assert against it.
+3. `make up` (or `make deploy`).
 
-A DAG with no `access_control` is visible to nobody, since no team role holds
-the global `DAGs` permission.
+A DAG with no `access_control` is visible to nobody but `Admin`, since no
+team role holds the global `DAGs` permission.
 
-### Shared code: `dags/common/`
+### Adding a project
 
-Helpers shared by several DAGs live in `dags/common/` (a package, with an
-`__init__.py`). The DAG folder itself is on `sys.path`, so any DAG file
-imports from it directly:
+1. `dags/<project>/__init__.py` + `dags/<project>/common/__init__.py` +
+   `common/greetings.py` (copy an existing one).
+2. One or more pipeline files, importing `from <project>.common... import`.
+3. `chart/files/roles/<project>.json` -- the role(s) that project's DAGs
+   grant. The chart auto-globs `files/roles/*.json`; no template edit.
+4. `tests/test_<project>/` -- `__init__.py`, `manifest.py`, and copy
+   `test_dags.py` + `test_greetings.py` from another project (they are
+   generic -- `test_dags.py` is byte-identical everywhere, driven by
+   `manifest.py`).
 
-```python
-from common.greetings import where
-```
-
-Every demo DAG uses it, which makes the import a live check: if
-`dags/common/` were missing from the image or the module broke, each
-importing DAG would show up in `airflow dags list-import-errors` instead of
-failing silently at run time.
-
-Keep non-DAG modules under `common/` (or another subfolder), not loose in
-`dags/` -- the processor parses every top-level `.py` there looking for DAG
-objects.
+`tests/test_projects_global.py` fails if a `dags/<project>/` has no matching
+`tests/test_<project>/manifest.py`, so a half-added project can't slip
+through.
 
 ## Testing the DAGs
 
 `tests/` holds the `dags/` unit tests. It sits at the repo root next to
 `dags/`, not inside it, so the `Dockerfile`'s `COPY dags/` never picks them
 up: they neither ship to the cluster nor get parsed by the dag processor.
-What they cover:
 
-- **`test_dag_integrity.py`** -- `DagBag` parses `dags/` with zero import
-  errors (which also proves `dags/common/` ships and imports), and the set
-  of DAGs is exactly the eight expected, one per source file.
-- **`test_access_control.py`** -- each `team_*_pipeline` grants exactly its
-  own role `{can_read, can_edit}` and that role exists in
-  `chart/files/roles.json`; every `hello_*` / `always_fails` DAG carries no
-  `access_control` at all (Admin-only). This is the isolation contract from
-  [How the isolation actually works](#how-the-isolation-actually-works),
-  turned into a regression guard.
-- **`test_worker_placement.py`** -- `hello_{small,medium,large}` pin the
-  matching `queue=`, each queue has a worker set in `chart/values.yaml`,
-  `small` is the default queue, and `hello_kubernetes` runs with
-  `executor="KubernetesExecutor"` + a `pod_override`.
-- **`test_dag_behavior.py`** -- task callables and wiring: the
-  `extract -> report` shape, and `always_fails` really raises with
-  `retries: 0`.
-- **`test_greetings.py`** -- pure unit tests for `common.greetings` (no
-  Airflow needed).
+Its layout mirrors `dags/`: one `tests/test_<project>/` package per project,
+each with a `manifest.py` (exactly what that project ships) and thin test
+files. The shared machinery is at the top:
+
+- **`conftest.py`** -- builds ONE `DagBag` over all of `dags/` for the
+  session; `dagtest_util.dags_in_project` slices it per project.
+- **`dagtest_util.py`** -- pure helpers (no Airflow import): project
+  discovery, role-file readers, `access_control` flattening.
+- **`_dag_checks.py`** -- the generic per-project contract, driven by a
+  project's `manifest.py`. `test_<project>/test_dags.py` is a byte-identical
+  thin wrapper in every project.
+- **`test_projects_global.py`** -- cross-project invariants: every
+  `dags/<project>/` has a matching `tests/test_<project>/manifest.py`; the
+  manifests account for every parsed DAG with no `dag_id` claimed twice; no
+  role file redefines a FAB built-in.
+
+Per project, `test_dags.py` covers: `DagBag` parses with zero import errors
+(which also proves that project's `common/` ships and imports), the DAG set
+matches `EXPECTED_DAG_IDS` one-per-source-file, each `TEAM_DAG_ROLE` DAG
+grants exactly its own role `{can_read, can_edit}` and that role is defined
+in `chart/files/roles/<project>.json`, and each `NO_ACL_DAG_IDS` DAG carries
+no `access_control` (Admin-only) -- the isolation contract from
+[How the isolation actually works](#how-the-isolation-actually-works) turned
+into a regression guard. The `demo` project adds `test_dag_behavior.py`
+(`extract -> report` wiring, `always_fails` raises with `retries: 0`) and
+`test_worker_placement.py` (`hello_*` queue pinning vs `chart/values.yaml`,
+the `KubernetesExecutor` + `pod_override` case). Every project has a
+`test_greetings.py` -- pure unit tests for its own `common.greetings`, no
+Airflow needed.
 
 Run them the easy way -- inside the hardened image, which already has
 Airflow 3.3.1 and the DAGs:
@@ -811,8 +858,8 @@ they land in MinIO after the pod is deleted.
 2. `make sso` -- the realm ships as a ConfigMap and the target restarts Keycloak
    so the change is re-imported.
 3. New groups also need an `AUTH_ROLES_MAPPING` entry in the
-   `webserver_config.py` embedded in `chart/values.yaml` and a role in
-   `chart/files/roles.json`, then `make deploy`.
+   `webserver_config.py` embedded in `chart/values.yaml` and a role in the
+   relevant `chart/files/roles/<project>.json`, then `make deploy`.
 
 ## Updating the image
 

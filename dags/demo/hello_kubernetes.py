@@ -2,8 +2,8 @@
 
 `executor="KubernetesExecutor"` (Airflow 3 multi-executor) makes the task
 run in a dedicated pod instead of on a Celery worker; `pod_override` sizes
-it inline. Uses the shared helper `common.greetings.where` (see
-`dags/common/`) -- which also proves the common-folder import works from a
+it inline. Uses the shared helper `demo.common.greetings.where` (see
+`dags/demo/common/`) -- which also proves the common-folder import works from a
 pod built off the same image. No `access_control` -> only the Airflow Admin
 role sees it.
 """
@@ -13,7 +13,7 @@ from __future__ import annotations
 import pendulum
 from airflow.sdk import DAG, task
 
-from common.greetings import where
+from demo.common.greetings import where
 
 try:
     from kubernetes.client import models as k8s

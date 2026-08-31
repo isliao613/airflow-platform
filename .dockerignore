@@ -1,0 +1,20 @@
+# The image only needs `dags/` (Dockerfile: COPY dags/). Everything else in
+# the repo is build/deploy tooling or tests -- keep it out of the build
+# context so a stray local artifact can't end up baked into the image.
+.git
+tests/
+chart/
+sso/
+vault/
+postgres/
+minio/
+Makefile
+README.md
+kind-config.yaml
+pytest.ini
+*.tgz
+
+# Never ship bytecode / caches -- the image compiles its own.
+**/__pycache__/
+*.py[cod]
+.pytest_cache/

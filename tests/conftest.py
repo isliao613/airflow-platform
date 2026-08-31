@@ -10,8 +10,11 @@ environment the DagBag sees matches the cluster:
   * AIRFLOW_HOME on a throwaway temp dir (only used when there is no real
     one, e.g. a local venv -- inside the image AIRFLOW_HOME is already set);
   * dags/ on sys.path, the same as the real dag processor, so
-    ``import common.greetings`` resolves from a DAG file and from
-    test_greetings.py alike.
+    ``from <project>.common.greetings import ...`` resolves from a DAG file
+    and from the per-project greetings tests alike.
+
+One DagBag is built over the WHOLE of dags/ (every project) and shared for
+the session; ``tests.dagtest_util.dags_in_project`` slices it per project.
 
 tests/ sits beside dags/, not inside it, so the Dockerfile's ``COPY dags/``
 never picks these files up: they neither ship to the cluster nor get parsed
@@ -24,7 +27,7 @@ import os
 import sys
 import tempfile
 
-from dagtest_util import DAGS_DIR
+from tests.dagtest_util import DAGS_DIR
 
 sys.path.insert(0, str(DAGS_DIR))
 
@@ -47,7 +50,7 @@ def _format_import_errors(errors: dict) -> str:
 
 @pytest.fixture(scope="session")
 def dagbag():
-    """dags/ parsed once per session (raw -- import errors NOT asserted)."""
+    """All of dags/ parsed once per session (raw -- import errors NOT asserted)."""
     from airflow.models import DagBag
 
     # No include_examples kwarg in Airflow 3.x -- DagBag.__init__ dropped it;
@@ -58,6 +61,6 @@ def dagbag():
 
 @pytest.fixture(scope="session")
 def dags(dagbag):
-    """{dag_id: DAG}, and a hard stop if parsing produced any import error."""
+    """{dag_id: DAG} across every project, and a hard stop on any import error."""
     assert not dagbag.import_errors, _format_import_errors(dagbag.import_errors)
     return dagbag.dags

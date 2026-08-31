@@ -1,20 +1,25 @@
 {{- if not .Values.teamRoles.configMapName }}
-# Bundled roles.json -- the demo team_a/b/c permission set, read from
-# files/roles.json at this chart's root (NOT under templates/ -- .Files.Get
-# only reads non-template files).
+# Bundled role files -- one JSON file per project under files/roles/ (demo,
+# project1, project2, ...), each read from this chart's root via .Files.Glob
+# (NOT under templates/ -- .Files only reads non-template files). Every
+# *.json in that directory becomes a key in this ConfigMap; the sync-roles
+# hook Job mounts them all and reconciles the union.
 #
 # Rendered ONLY when teamRoles.configMapName is unset, i.e. the `make up`
 # path. In production, point teamRoles.configMapName at an operator-managed
-# ConfigMap instead and this template renders nothing -- see values.yaml.
+# ConfigMap instead (its *.json keys are mounted and reconciled the same
+# way) and this template renders nothing -- see values.yaml.
 #
-# Edit files/roles.json and re-run `make deploy` (or `make up`) to pick up a
-# change here; the hook Job reconciles it idempotently on every
+# Add a project by dropping files/roles/<project>.json and re-running `make
+# deploy` (or `make up`); the hook Job reconciles it idempotently on every
 # install/upgrade.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Release.Name }}-roles
 data:
-  roles.json: |
-{{ .Files.Get "files/roles.json" | indent 4 }}
+{{- range $path, $_ := .Files.Glob "files/roles/*.json" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
 {{- end }}

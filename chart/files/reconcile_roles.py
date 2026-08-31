@@ -1,16 +1,19 @@
-"""Gap-free reconcile of an operator-defined roles.json against the live DB.
+"""Gap-free reconcile of operator-defined role files against the live DB.
 
 Run by chart/templates/sync-roles-job.yaml on every post-install /
 post-upgrade, after `airflow roles import`. Import is kept only to CREATE
 declared roles that don't exist yet (one process, cheap); it cannot UPDATE
 a role that already exists -- its own docstring: "if a role already exists
 in the db, it is not overwritten, even when the permissions change" -- which
-after the first deploy is every role in the file.
+after the first deploy is every role in the files.
 
-The set of roles this job manages is exactly the set of role names declared
-in --desired. There is no hard-coded list, so operators can define their own
-roles.json. For each managed role it diffs the file against `airflow roles
-export` and applies only the delta:
+--desired takes ONE OR MORE JSON files (one per project: demo, project1,
+...). They are merged into a single target model -- a role named in two
+files gets the UNION of their permissions, with a warning. The set of roles
+this job manages is exactly the set of role names across those files. There
+is no hard-coded list, so operators can define their own files. For each
+managed role it diffs the merged model against `airflow roles export` and
+applies only the delta:
 
   * the role is never deleted -> ab_user_role (who holds the role) is
     untouched -> nobody is dropped from a role mid-upgrade and forced to
@@ -103,6 +106,28 @@ def load(path: str, *, strict: bool):
     return model
 
 
+def load_many(paths: list[str], *, strict: bool):
+    """Merge several role files into one {role: {resource: {actions}}} model.
+
+    A role appearing in more than one file gets the union of its
+    permissions; that is almost always a mistake across projects, so warn.
+    """
+    merged: dict[str, dict[str, set[str]]] = {}
+    defined_in: dict[str, str] = {}
+    for path in paths:
+        for role, resources in load(path, strict=strict).items():
+            if role in defined_in and defined_in[role] != path:
+                print(
+                    f"WARNING: role {role!r} is defined in both {defined_in[role]} and "
+                    f"{path}; merging their permissions (union)"
+                )
+            defined_in.setdefault(role, path)
+            dst = merged.setdefault(role, {})
+            for resource, actions in resources.items():
+                dst.setdefault(resource, set()).update(actions)
+    return merged
+
+
 def airflow_roles(*args: str) -> None:
     cmd = ["airflow", "roles", *args]
     print("+ " + " ".join(cmd), flush=True)
@@ -134,24 +159,28 @@ def reconcile(role: str, want: dict, have: dict) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Gap-free reconcile of an operator-defined roles.json against the live DB"
+        description="Gap-free reconcile of operator-defined role files against the live DB"
     )
-    parser.add_argument("--desired", required=True, help="operator's roles.json (target state)")
+    parser.add_argument(
+        "--desired", required=True, nargs="+",
+        help="one or more role JSON files (target state); merged into one model",
+    )
     parser.add_argument("--current", required=True, help="`airflow roles export` output")
     args = parser.parse_args()
 
-    desired = load(args.desired, strict=True)
+    desired_label = ", ".join(args.desired)
+    desired = load_many(args.desired, strict=True)
     current = load(args.current, strict=False)
 
     if not desired:
-        print(f"{args.desired} declares no roles; nothing to reconcile")
+        print(f"{desired_label} declares no roles; nothing to reconcile")
         return 0
 
     clash = sorted(BUILTIN_ROLES & set(desired))
     if clash:
         raise SystemExit(
-            f"{args.desired}: refusing to manage FAB built-in role(s): {', '.join(clash)}. "
-            "Remove them -- they are owned by FAB, not this file."
+            f"{desired_label}: refusing to manage FAB built-in role(s): {', '.join(clash)}. "
+            "Remove them -- they are owned by FAB, not these files."
         )
 
     managed = sorted(desired)
@@ -185,7 +214,7 @@ def main() -> int:
     orphans = sorted(set(current) - BUILTIN_ROLES - set(desired))
     if orphans:
         print(
-            f"note: role(s) present in the DB but absent from {args.desired}, left untouched "
+            f"note: role(s) present in the DB but absent from {desired_label}, left untouched "
             f"(this job never deletes roles): {', '.join(orphans)}"
         )
 

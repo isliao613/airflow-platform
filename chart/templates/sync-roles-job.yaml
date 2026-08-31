@@ -1,15 +1,17 @@
-# Post-install/post-upgrade hook: reconciles the roles defined in a
-# roles.json and applies each DAG's access_control (airflow sync-perm
+# Post-install/post-upgrade hook: reconciles the roles defined across one or
+# more role files and applies each DAG's access_control (airflow sync-perm
 # --include-dags). Replaces the old Makefile `sso-perms` target's kubectl
 # exec + kubectl cp + polling shell logic with a declarative Helm hook.
 #
-# roles.json comes from one of two ConfigMaps, chosen by
+# The role files come from one of two ConfigMaps, chosen by
 # teamRoles.configMapName (see values.yaml):
-#   - unset  -> "<release>-roles", rendered by the chart from its bundled
-#               files/roles.json (the demo team_a/b/c set; the `make up` path)
+#   - unset  -> "<release>-roles", rendered by the chart from every
+#               files/roles/*.json (one file per project: demo, project1,
+#               project2, ...; the `make up` path)
 #   - set    -> that operator-managed ConfigMap, mounted as-is; the chart
-#               owns no roles.json in this mode
-# Either way it's an arbitrary set of roles, not a fixed team_a/b/c.
+#               owns no role files in this mode
+# Either way every *.json key mounted under /opt/airflow/roles is an
+# arbitrary set of roles; the Job imports each and reconciles their UNION.
 # reconcile_roles.py always comes from "<release>-reconcile-roles" (chart-
 # owned logic), mounted separately.
 #
@@ -17,12 +19,12 @@
 # -- it cannot UPDATE an existing role ("if a role already exists in the db,
 # it is not overwritten, even when the permissions change"), and after the
 # first deploy every declared role already exists (Postgres keeps its PVC
-# across `helm upgrade`). reconcile_roles.py then diffs roles.json against
-# `airflow roles export` and applies only the delta -- add-perms before
-# del-perms, the role is never deleted (nobody is dropped from a role
-# mid-upgrade), and FAB built-in roles are refused. The managed set is
-# exactly the role names in the file; roles absent from it are left
-# untouched, never pruned.
+# across `helm upgrade`). reconcile_roles.py then diffs the merged role
+# files against `airflow roles export` and applies only the delta --
+# add-perms before del-perms, the role is never deleted (nobody is dropped
+# from a role mid-upgrade), and FAB built-in roles are refused. The managed
+# set is exactly the role names across those files; roles absent from them
+# are left untouched, never pruned.
 #
 # Lives directly in this chart's own templates/ (this IS the root chart,
 # chart/Chart.yaml) alongside the airflow dependency, so it's always
@@ -89,14 +91,25 @@ spec:
                 fi
                 sleep 5
               done
-              ROLES_FILE=/opt/airflow/roles/{{ .Values.teamRoles.key | default "roles.json" }}
-              echo "creating any missing roles (import can't update existing ones)..."
-              airflow roles import "$ROLES_FILE"
-              echo "reconciling roles to roles.json (delta only, add before delete)..."
-              airflow roles export -p /tmp/current-roles.json
-              python3 /opt/airflow/reconcile/reconcile_roles.py \
-                --desired "$ROLES_FILE" \
-                --current /tmp/current-roles.json
+              # Every *.json key mounted under /opt/airflow/roles is one
+              # project's role file (a ConfigMap mount exposes each key as a
+              # symlink; -maxdepth 1 skips the ..data/ indirection dir).
+              mapfile -t ROLE_FILES < <(find /opt/airflow/roles -maxdepth 1 -name '*.json' | sort)
+              if [ "${#ROLE_FILES[@]}" -eq 0 ]; then
+                echo "no *.json role files under /opt/airflow/roles; skipping role reconcile"
+              else
+                echo "role files: ${ROLE_FILES[*]}"
+                echo "creating any missing roles (import can't update existing ones)..."
+                for f in "${ROLE_FILES[@]}"; do
+                  echo "  import $f"
+                  airflow roles import "$f"
+                done
+                echo "reconciling roles to the merged role files (delta only, add before delete)..."
+                airflow roles export -p /tmp/current-roles.json
+                python3 /opt/airflow/reconcile/reconcile_roles.py \
+                  --desired "${ROLE_FILES[@]}" \
+                  --current /tmp/current-roles.json
+              fi
               echo "applying per-DAG access_control..."
               airflow sync-perm --include-dags
           env:

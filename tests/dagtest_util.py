@@ -1,8 +1,16 @@
-"""Shared constants and helpers for the dags/ test-suite.
+"""Shared constants and pure helpers for the dags/ test-suite.
 
-Pure Python -- no Airflow import -- so the checks that only exercise
-dags/common/ (test_greetings.py) and the cross-file consistency checks
-(roles.json / values.yaml) work even without Airflow installed.
+Pure Python -- no Airflow import -- so the checks that only exercise a
+project's ``common/`` package (each ``tests/test_<project>/test_greetings.py``)
+and the cross-file consistency checks (role files / values.yaml) work even
+without Airflow installed.
+
+Layout: every ``dags/<project>/`` is a self-contained Python package (its own
+``__init__.py`` and ``common/`` subpackage -- projects are fully independent
+and never import one another). ``tests/test_<project>/`` mirrors it and
+carries a ``manifest.py`` stating exactly what that project ships; the
+generic contract in ``tests/_dag_checks.py`` is driven entirely by that
+manifest.
 """
 
 from __future__ import annotations
@@ -12,63 +20,69 @@ from pathlib import Path
 
 # tests/ sits at the repo root, next to dags/. In the `make test` container it
 # is mounted at /opt/airflow/tests, so REPO_ROOT resolves to /opt/airflow --
-# which is where the DAGs (baked in) and the mounted chart/ live too.
+# where the DAGs (baked in) and the mounted chart/ live too.
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
 DAGS_DIR = REPO_ROOT / "dags"
-ROLES_JSON = REPO_ROOT / "chart" / "files" / "roles.json"
+ROLES_DIR = REPO_ROOT / "chart" / "files" / "roles"
 CHART_VALUES = REPO_ROOT / "chart" / "values.yaml"
 
-# The DAGs baked into the image (Dockerfile: `COPY dags/`). Kept explicit so a
-# file that silently stops defining a DAG -- or an unexpected new one -- fails
-# the suite instead of slipping through.
-EXPECTED_DAG_IDS = {
-    "team_a_pipeline",
-    "team_b_pipeline",
-    "team_c_pipeline",
-    "hello_small",
-    "hello_medium",
-    "hello_large",
-    "hello_kubernetes",
-    "always_fails",
-}
+# FAB built-ins -- no per-project role file may (re)define them.
+BUILTIN_ROLES = {"Admin", "Public", "Op", "Viewer", "User"}
 
-# dag_id -> the single FAB role its access_control grants. Each role name must
-# also be defined in chart/files/roles.json (test_access_control checks that).
-TEAM_DAG_ROLE = {
-    "team_a_pipeline": "team_a",
-    "team_b_pipeline": "team_b",
-    "team_c_pipeline": "team_c",
-}
-
-# dag_id -> the Celery queue / worker class the DAG's task pins itself to. The
-# queue names must match a set in airflow.workers.celery.sets
-# (chart/values.yaml).
-QUEUE_DAG_CLASS = {
-    "hello_small": "small",
-    "hello_medium": "medium",
-    "hello_large": "large",
-}
-
-# DAGs that deliberately carry NO access_control -- README: "only the Airflow
-# Admin role sees it", because no team role holds the global DAGs permission.
-NO_ACL_DAG_IDS = {
-    "hello_small",
-    "hello_medium",
-    "hello_large",
-    "hello_kubernetes",
-    "always_fails",
-}
+_NON_PROJECT_DIRS = {"__pycache__"}
 
 
-def dag_source_files() -> list[Path]:
-    """Every top-level DAG module in dags/ (excludes the common/ package)."""
-    return sorted(p for p in DAGS_DIR.glob("*.py") if p.name != "__init__.py")
+def discover_dag_projects() -> set[str]:
+    """Every project package under dags/ (a directory with an __init__.py)."""
+    return {
+        p.name
+        for p in DAGS_DIR.iterdir()
+        if p.is_dir()
+        and p.name not in _NON_PROJECT_DIRS
+        and (p / "__init__.py").is_file()
+    }
 
 
-def role_names_in_roles_json() -> set[str]:
-    data = json.loads(ROLES_JSON.read_text())
-    return {entry["name"] for entry in data}
+def discover_test_projects() -> set[str]:
+    """Every tests/test_<project>/ package that carries a manifest.py."""
+    return {
+        p.name[len("test_"):]
+        for p in TESTS_DIR.iterdir()
+        if p.is_dir() and p.name.startswith("test_") and (p / "manifest.py").is_file()
+    }
+
+
+def project_of(fileloc: str) -> str:
+    """The project a parsed DAG belongs to, taken from its file path."""
+    return Path(fileloc).resolve().relative_to(DAGS_DIR).parts[0]
+
+
+def dags_in_project(dags: dict, project: str) -> dict:
+    """Subset of a DagBag's {dag_id: DAG} that lives under dags/<project>/."""
+    return {d_id: d for d_id, d in dags.items() if project_of(d.fileloc) == project}
+
+
+def dag_source_files(project: str) -> list[Path]:
+    """Top-level DAG modules in dags/<project>/ (excludes __init__ and common/)."""
+    return sorted(
+        p for p in (DAGS_DIR / project).glob("*.py") if p.name != "__init__.py"
+    )
+
+
+def role_file(project: str) -> Path:
+    return ROLES_DIR / f"{project}.json"
+
+
+def role_names_in_role_file(project: str) -> set[str]:
+    return {entry["name"] for entry in json.loads(role_file(project).read_text())}
+
+
+def all_role_names() -> set[str]:
+    names: set[str] = set()
+    for f in sorted(ROLES_DIR.glob("*.json")):
+        names |= {entry["name"] for entry in json.loads(f.read_text())}
+    return names
 
 
 def flatten_access_control(dag) -> dict[str, set[str]]:
