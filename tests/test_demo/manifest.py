@@ -20,17 +20,19 @@ EXPECTED_DAG_IDS = {
     "always_fails",
 }
 
-# dag_id -> the single FAB role its access_control grants. Each role name must
-# also be defined in chart/files/roles/demo.json (test_dags checks that).
+# dag_id -> the single FAB role its access_control grants. test_dags asserts
+# the DAG grants exactly this role {can_read, can_edit}. That a matching role
+# exists in chart/files/roles/demo.json is a deploy concern, not checked here.
 TEAM_DAG_ROLE = {
     "team_a_pipeline": "team_a",
     "team_b_pipeline": "team_b",
     "team_c_pipeline": "team_c",
 }
 
-# dag_id -> the Celery queue / worker class the DAG's task pins itself to. The
-# queue names must match a set in airflow.workers.celery.sets
-# (chart/values.yaml); test_worker_placement.py checks that.
+# dag_id -> the Celery queue / worker class the DAG's task pins itself to.
+# test_worker_placement.py asserts the DAG declares exactly this queue; that a
+# matching worker set exists (airflow.workers.celery.sets in
+# chart/values.yaml) is a deploy concern, checked by the `make up` smoke run.
 QUEUE_DAG_CLASS = {
     "hello_small": "small",
     "hello_medium": "medium",

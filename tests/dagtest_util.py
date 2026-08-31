@@ -2,8 +2,14 @@
 
 Pure Python -- no Airflow import -- so the checks that only exercise a
 project's ``common/`` package (each ``tests/test_<project>/test_greetings.py``)
-and the cross-file consistency checks (role files / values.yaml) work even
-without Airflow installed.
+work even without Airflow installed.
+
+Scope: the suite is a UNIT test of the DAGs. It reads only ``dags/`` and each
+project's ``tests/test_<project>/manifest.py`` -- never the Helm chart
+(``chart/files/roles/*.json``, ``chart/values.yaml``). Keeping those in step
+with the DAGs (a role for every granted role, a worker set for every queue)
+is a deploy concern, covered by the sync-roles hook and the ``make up``
+smoke run.
 
 Layout: every ``dags/<project>/`` is a self-contained Python package (its own
 ``__init__.py`` and ``common/`` subpackage -- projects are fully independent
@@ -15,20 +21,14 @@ manifest.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 # tests/ sits at the repo root, next to dags/. In the `make test` container it
 # is mounted at /opt/airflow/tests, so REPO_ROOT resolves to /opt/airflow --
-# where the DAGs (baked in) and the mounted chart/ live too.
+# where the DAGs (baked in) live too.
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
 DAGS_DIR = REPO_ROOT / "dags"
-ROLES_DIR = REPO_ROOT / "chart" / "files" / "roles"
-CHART_VALUES = REPO_ROOT / "chart" / "values.yaml"
-
-# FAB built-ins -- no per-project role file may (re)define them.
-BUILTIN_ROLES = {"Admin", "Public", "Op", "Viewer", "User"}
 
 _NON_PROJECT_DIRS = {"__pycache__"}
 
@@ -68,21 +68,6 @@ def dag_source_files(project: str) -> list[Path]:
     return sorted(
         p for p in (DAGS_DIR / project).glob("*.py") if p.name != "__init__.py"
     )
-
-
-def role_file(project: str) -> Path:
-    return ROLES_DIR / f"{project}.json"
-
-
-def role_names_in_role_file(project: str) -> set[str]:
-    return {entry["name"] for entry in json.loads(role_file(project).read_text())}
-
-
-def all_role_names() -> set[str]:
-    names: set[str] = set()
-    for f in sorted(ROLES_DIR.glob("*.json")):
-        names |= {entry["name"] for entry in json.loads(f.read_text())}
-    return names
 
 
 def flatten_access_control(dag) -> dict[str, set[str]]:

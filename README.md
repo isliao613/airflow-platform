@@ -551,6 +551,13 @@ through.
 `dags/`, not inside it, so the `Dockerfile`'s `COPY dags/` never picks them
 up: they neither ship to the cluster nor get parsed by the dag processor.
 
+The suite is a **unit test of the DAGs**: it reads only `dags/` and each
+project's `tests/test_<project>/manifest.py`, never the Helm chart. Keeping
+the chart in step with the DAGs (a role in `chart/files/roles/<project>.json`
+for every role a DAG grants, a worker set in `chart/values.yaml` for every
+`queue=`) is a deploy concern -- the sync-roles hook and the `make up` smoke
+run cover it.
+
 Its layout mirrors `dags/`: one `tests/test_<project>/` package per project,
 each with a `manifest.py` (exactly what that project ships) and thin test
 files. The shared machinery is at the top:
@@ -558,28 +565,27 @@ files. The shared machinery is at the top:
 - **`conftest.py`** -- builds ONE `DagBag` over all of `dags/` for the
   session; `dagtest_util.dags_in_project` slices it per project.
 - **`dagtest_util.py`** -- pure helpers (no Airflow import): project
-  discovery, role-file readers, `access_control` flattening.
+  discovery, `access_control` flattening.
 - **`_dag_checks.py`** -- the generic per-project contract, driven by a
   project's `manifest.py`. `test_<project>/test_dags.py` is a byte-identical
   thin wrapper in every project.
 - **`test_projects_global.py`** -- cross-project invariants: every
-  `dags/<project>/` has a matching `tests/test_<project>/manifest.py`; the
-  manifests account for every parsed DAG with no `dag_id` claimed twice; no
-  role file redefines a FAB built-in.
+  `dags/<project>/` has a matching `tests/test_<project>/manifest.py`, and
+  the manifests account for every parsed DAG with no `dag_id` claimed twice.
 
 Per project, `test_dags.py` covers: `DagBag` parses with zero import errors
 (which also proves that project's `common/` ships and imports), the DAG set
 matches `EXPECTED_DAG_IDS` one-per-source-file, each `TEAM_DAG_ROLE` DAG
-grants exactly its own role `{can_read, can_edit}` and that role is defined
-in `chart/files/roles/<project>.json`, and each `NO_ACL_DAG_IDS` DAG carries
-no `access_control` (Admin-only) -- the isolation contract from
+grants exactly its own role `{can_read, can_edit}` (read straight off the
+DAG's `access_control`), and each `NO_ACL_DAG_IDS` DAG carries no
+`access_control` (Admin-only) -- the isolation contract from
 [How the isolation actually works](#how-the-isolation-actually-works) turned
 into a regression guard. The `demo` project adds `test_dag_behavior.py`
 (`extract -> report` wiring, `always_fails` raises with `retries: 0`) and
-`test_worker_placement.py` (`hello_*` queue pinning vs `chart/values.yaml`,
-the `KubernetesExecutor` + `pod_override` case). Every project has a
-`test_greetings.py` -- pure unit tests for its own `common.greetings`, no
-Airflow needed.
+`test_worker_placement.py` (each `hello_*` task pins its expected `queue=`,
+`hello_kubernetes` runs as its own pod via `executor_config['pod_override']`).
+Every project has a `test_greetings.py` -- pure unit tests for its own
+`common.greetings`, no Airflow needed.
 
 Run them the easy way -- inside the hardened image, which already has
 Airflow 3.3.1 and the DAGs:
@@ -588,11 +594,22 @@ Airflow 3.3.1 and the DAGs:
 make test
 ```
 
-Or locally against a matching Airflow (pin it to `AIRFLOW_VERSION`):
+Or locally against a matching Airflow (pin it to `AIRFLOW_VERSION`) for the
+full suite:
 
 ```
 pip install -r tests/requirements.txt \
   -c "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.10.txt"
+pytest
+```
+
+Or with **no container and no Airflow** at all -- the `dagbag` fixture and
+everything downstream of it is skipped rather than erroring, so this still
+runs the per-project `common.greetings` unit tests and the `dags/` <->
+`tests/` layout guard:
+
+```
+pip install 'pytest>=8,<9'
 pytest
 ```
 

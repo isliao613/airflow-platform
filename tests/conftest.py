@@ -16,6 +16,13 @@ environment the DagBag sees matches the cluster:
 One DagBag is built over the WHOLE of dags/ (every project) and shared for
 the session; ``tests.dagtest_util.dags_in_project`` slices it per project.
 
+No container needed: if ``apache-airflow`` is not importable, the ``dagbag``
+fixture (and everything that depends on it) is SKIPPED rather than erroring,
+so a bare ``pip install pytest && pytest`` still runs every check that does
+not need a DagBag -- the per-project ``common.greetings`` unit tests and the
+project<->tests layout guard. Install ``tests/requirements.txt`` (or run
+``make test`` in the image) for the full suite.
+
 tests/ sits beside dags/, not inside it, so the Dockerfile's ``COPY dags/``
 never picks these files up: they neither ship to the cluster nor get parsed
 by the dag processor, and no .airflowignore is needed to keep them out.
@@ -23,11 +30,17 @@ by the dag processor, and no .airflowignore is needed to keep them out.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import tempfile
 
 from tests.dagtest_util import DAGS_DIR
+
+try:
+    _HAS_AIRFLOW = importlib.util.find_spec("airflow") is not None
+except (ImportError, ValueError):  # pragma: no cover - defensive
+    _HAS_AIRFLOW = False
 
 sys.path.insert(0, str(DAGS_DIR))
 
@@ -50,7 +63,16 @@ def _format_import_errors(errors: dict) -> str:
 
 @pytest.fixture(scope="session")
 def dagbag():
-    """All of dags/ parsed once per session (raw -- import errors NOT asserted)."""
+    """All of dags/ parsed once per session (raw -- import errors NOT asserted).
+
+    Skips the whole DagBag-dependent slice of the suite when Airflow is not
+    installed, so `pytest` runs container-free against a bare environment.
+    """
+    if not _HAS_AIRFLOW:
+        pytest.skip(
+            "apache-airflow not installed -- run `pip install -r tests/requirements.txt` "
+            "(or `make test`) for the DagBag-dependent checks"
+        )
     from airflow.models import DagBag
 
     # No include_examples kwarg in Airflow 3.x -- DagBag.__init__ dropped it;

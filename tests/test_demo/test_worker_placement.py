@@ -1,21 +1,26 @@
 """Worker-class routing for the demo project (README: "Worker classes and
 per-DAG Kubernetes pods").
 
-Guards the queue / executor each hello_* DAG pins itself to, and keeps that
-in step with chart/values.yaml -- a DAG routed to a queue with no matching
-worker set would just sit queued forever. Demo-specific (task name "hello",
-the KubernetesExecutor case), so no counterpart in the scaffolds.
+Asserts only what the DAG files themselves declare: the Celery queue each
+``hello_*`` task pins itself to, and that ``hello_kubernetes`` runs as its
+own pod. Whether a matching Celery worker set actually exists for that queue
+(``airflow.workers.celery.sets`` in ``chart/values.yaml``) is a deploy-time
+concern and is deliberately NOT checked here -- unit tests read only
+``dags/`` and the project manifest, never the Helm chart. That
+queue<->worker-set consistency is covered by the `make up` smoke check
+instead.
+
+Demo-specific (task name "hello", the KubernetesExecutor case), so no
+counterpart in the project1/project2 scaffolds.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from tests.dagtest_util import CHART_VALUES, dags_in_project
+from tests.dagtest_util import dags_in_project
 
 from . import manifest as m
-
-yaml = pytest.importorskip("yaml")
 
 
 @pytest.fixture(scope="module")
@@ -23,31 +28,9 @@ def ddags(dags):
     return dags_in_project(dags, m.PROJECT)
 
 
-def _values() -> dict:
-    return yaml.safe_load(CHART_VALUES.read_text())
-
-
-def _celery_queues() -> set[str]:
-    return {s["queue"] for s in _values()["airflow"]["workers"]["celery"]["sets"]}
-
-
 @pytest.mark.parametrize("dag_id,queue", sorted(m.QUEUE_DAG_CLASS.items()))
 def test_hello_dag_pins_expected_queue(dag_id, queue, ddags):
     assert ddags[dag_id].get_task("hello").queue == queue
-
-
-@pytest.mark.parametrize("dag_id,queue", sorted(m.QUEUE_DAG_CLASS.items()))
-def test_queue_has_a_matching_worker_set(dag_id, queue):
-    assert queue in _celery_queues(), (
-        f"{dag_id} routes to queue {queue!r} with no matching set in "
-        "airflow.workers.celery.sets"
-    )
-
-
-def test_small_is_the_default_queue(ddags):
-    # README: a task with no queue at all also lands on `small`.
-    assert _values()["airflow"]["config"]["operators"]["default_queue"] == "small"
-    assert ddags["hello_small"].get_task("hello").queue == "small"
 
 
 def test_hello_kubernetes_runs_as_its_own_pod(ddags):

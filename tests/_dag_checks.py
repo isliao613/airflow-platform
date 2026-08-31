@@ -10,6 +10,11 @@ lives in one place. A manifest module must expose:
     TEAM_DAG_ROLE     {dag_id: role}-- DAGs whose access_control grants one role
     QUEUE_DAG_CLASS   {dag_id: queue}
     NO_ACL_DAG_IDS    set[str]      -- DAGs that deliberately carry no grant
+
+Everything here is a unit check of the DAG objects and the project's own
+files -- nothing reads the Helm chart (roles files, values.yaml). Keeping
+those role files in step with each DAG's access_control is a deploy concern,
+verified by the sync-roles hook + the `make up` smoke run.
 """
 
 from __future__ import annotations
@@ -20,7 +25,6 @@ from tests.dagtest_util import (
     dag_source_files,
     dags_in_project,
     flatten_access_control,
-    role_names_in_role_file,
 )
 
 EXPECTED_TEAM_PERMS = {"can_read", "can_edit"}
@@ -59,21 +63,7 @@ def check_team_dag_grants_only_its_role(all_dags, m, dag_id, role):
     assert acl[role] == EXPECTED_TEAM_PERMS
 
 
-def check_role_defined_in_role_file(m, role):
-    assert role in role_names_in_role_file(m.PROJECT), (
-        f"{m.PROJECT}: a DAG grants {role!r}, but "
-        f"chart/files/roles/{m.PROJECT}.json never defines that role"
-    )
-
-
 def check_non_team_dag_has_no_access_control(all_dags, m, dag_id):
     assert not flatten_access_control(_pdags(all_dags, m)[dag_id]), (
         f"{dag_id} carries access_control -- it is meant to be Admin-only (no grant)"
-    )
-
-
-def check_role_file_defines_exactly_the_team_roles(m):
-    assert role_names_in_role_file(m.PROJECT) == set(m.TEAM_DAG_ROLE.values()), (
-        f"chart/files/roles/{m.PROJECT}.json must define exactly the roles its "
-        f"DAGs grant ({sorted(set(m.TEAM_DAG_ROLE.values()))})"
     )
