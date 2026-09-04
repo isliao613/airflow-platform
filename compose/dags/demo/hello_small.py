@@ -1,0 +1,30 @@
+"""Hello world pinned to the `small` Celery worker class.
+
+`queue="small"` is also `AIRFLOW__OPERATORS__DEFAULT_QUEUE`, so a task with no
+queue at all lands here too -- `hello_world.py` relies on exactly that. This DAG
+runs on the `airflow-worker-small` service. Uses `demo.common.greetings.where` -- a shared module in
+`dags/demo/common/` -- so this DAG also verifies that the common-folder import
+resolves. No `access_control` -> only the Airflow Admin role sees it.
+"""
+
+from __future__ import annotations
+
+import pendulum
+from airflow.sdk import DAG, task
+
+from demo.common.greetings import where
+
+with DAG(
+    dag_id="hello_small",
+    description="Hello world on the small worker class",
+    schedule=None,
+    start_date=pendulum.datetime(2026, 1, 1, tz="UTC"),
+    catchup=False,
+    tags=["platform", "worker-class"],
+):
+
+    @task(queue="small")
+    def hello() -> str:
+        return where("hello from class=small")
+
+    hello()

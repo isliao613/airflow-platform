@@ -3,6 +3,9 @@
 One-click local deployment of Apache Airflow 3.3.1 (Helm chart 1.22.0) on a
 `kind` cluster, with Keycloak SSO and per-team DAG isolation.
 
+There is a second, Kubernetes-free deployment in [`compose/`](compose/README.md)
+-- see [Two stacks](#two-stacks) for which one to reach for.
+
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
@@ -41,6 +44,32 @@ fixed in the litellm 3.3.1 already bundles.
 | Airflow UI       | http://localhost:8080   | "Sign in with keycloak"           |
 | Keycloak console | http://localhost:8181   | `admin` / `admin`                 |
 | Vault UI         | http://localhost:8200   | Root token: `airflow-local-dev-root-token` |
+
+## Two stacks
+
+This repo holds two independent deployments of the same idea. Everything below
+this section is about the `kind` one, at the repo root.
+
+| | **root** (this README) | **[`compose/`](compose/README.md)** |
+|---|---|---|
+| Runs on | `kind` + Helm | `docker compose` |
+| Identities | Keycloak (OIDC) | Local FAB users in the metadata DB |
+| Secrets | Dev-mode Vault | Literals in `compose/.env` |
+| Task logs | MinIO (remote logging) | A shared Docker volume |
+| Metadata DB | 1 primary + 2 replicas, manual failover | One Postgres container |
+| Executors | `CeleryExecutor` + `KubernetesExecutor` | `CeleryExecutor` only |
+| Worker classes | 3 Deployments (`small`/`medium`/`large`) | 3 services, same names |
+| DAGs | Baked into the image (`COPY dags/`) | Bind-mounted from `compose/dags/` |
+
+**Reach for `compose/`** to iterate on DAGs quickly (edit a file, no rebuild, no
+cluster), or on a machine where `kind` is impractical. **Reach for the root
+stack** to exercise anything Kubernetes-shaped: SSO, Vault, per-task pods,
+metadata-DB failover, or the Helm chart itself.
+
+They are deliberately **not** coupled. Each carries its own `dags/`, its own role
+files, its own reconcile script and its own test suite, so `compose/` can be
+lifted into a separate repo as-is and neither stack constrains the other. The
+cost is that a DAG you want in both places has to be added twice.
 
 ## SSO and per-team DAG isolation
 
@@ -424,7 +453,7 @@ kubectl -n airflow exec deploy/airflow-vault -- vault kv get secret/airflow-plat
 | `Dockerfile`                | CVE-hardened image; bakes in `dags/`                                 |
 | `Makefile`                  | Deployment targets; source of truth for the image and version pins   |
 | `dags/`                     | One folder per project (`demo/`, `project1/`, `project2/`), each a self-contained Python package -- see [Projects under `dags/`](#projects-under-dags) |
-| `dags/demo/`                | The demo project: three per-team DAGs (each with `access_control`), `hello_{small,medium,large,kubernetes}.py` (one per worker-class / K8s-pod placement), and `always_fails.py` |
+| `dags/demo/`                | The demo project: three per-team DAGs (each with `access_control`), `hello_world.py` (default placement), `hello_{small,medium,large,kubernetes}.py` (one per worker-class / K8s-pod placement), and `always_fails.py` |
 | `dags/<project>/common/`    | That project's OWN shared helpers (`from <project>.common.greetings import ...`); the import doubles as a check that the package ships in the image. Projects never import one another's `common/` |
 | `dags/project1/`, `dags/project2/` | Scaffold projects: one pipeline + one role each, showing the shape a new team folder takes |
 | `tests/`                    | `pytest` unit tests for the DAGs; sits beside `dags/`, so the image never carries them -- see [Testing the DAGs](#testing-the-dags) |
@@ -846,8 +875,9 @@ from kubernetes.client import models as k8s
 def massive(): ...
 ```
 
-`dags/hello_small.py`, `hello_medium.py`, `hello_large.py` and
-`hello_kubernetes.py` are one hello-world DAG per placement.
+`dags/demo/hello_small.py`, `hello_medium.py`, `hello_large.py` and
+`hello_kubernetes.py` are one hello-world DAG per placement;
+`hello_world.py` names no placement at all and so exercises the default.
 
 ### Stateless workers + remote logging
 
