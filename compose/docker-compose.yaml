@@ -1,0 +1,289 @@
+# Docker Compose variant of this repo's Airflow platform: same DAGs, same
+# per-team isolation model, no Kubernetes.
+#
+# Dropped relative to the kind stack, all of them Kubernetes-shaped concerns:
+#   * Keycloak / SSO      -> local FAB users in the metadata DB (bootstrap/init.sh)
+#   * Vault               -> literals in .env, this file's single source of truth
+#   * MinIO remote logging-> a shared `airflow-logs` volume every service mounts
+#   * Postgres HA         -> one Postgres container; there is nothing to fail over
+#   * KubernetesExecutor  -> CeleryExecutor only; route with `queue=` instead
+#
+# DAGs are bind-mounted from ./dags rather than baked into the image, so an edit
+# is picked up by the dag processor with no rebuild.
+#
+# This directory is self-contained: its own dags/, roles/, reconcile_roles.py
+# and tests/. Nothing here reads anything outside compose/, so the folder can be
+# lifted out into its own repo as-is. The repo root is a separate Kubernetes
+# stack carrying its own copies of all four.
+#
+# Every value this file interpolates lives in .env.
+name: airflow-platform-compose
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    args:
+      AIRFLOW_VERSION: ${AIRFLOW_VERSION:-3.3.1}
+  image: airflow-platform-compose:${IMAGE_TAG:-3.3.1-hardened.1}
+
+  environment: &airflow-common-env
+    # CeleryExecutor only. KubernetesExecutor needs a cluster to talk to, so
+    # listing it here would just crash the scheduler on startup, and a task
+    # naming an executor this stack does not configure is a hard DAG *parse*
+    # error -- tests/test_demo/test_worker_placement.py guards against that.
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+
+    # Roles and per-DAG permissions are a FAB auth manager feature. Airflow 3
+    # defaults to SimpleAuthManager, which has neither -- without this the whole
+    # isolation model below silently does nothing. The kind stack sets the same
+    # thing via the chart's airflow.cfg.
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+
+    # Tasks with no explicit `queue` land on the `small` worker class, matching
+    # config.operators.default_queue in the kind stack's chart/values.yaml.
+    AIRFLOW__OPERATORS__DEFAULT_QUEUE: small
+
+    # Airflow 3 task SDK: workers reach the execution API over the network, so
+    # they need its address. Service name, not localhost -- each worker is its
+    # own container.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_PORT:-8080}
+
+    # Signs UI sessions and the JWTs workers present to the execution API. Both
+    # must be the SAME fixed value in every container, or a worker's token is
+    # rejected by the api-server; fixed (not generated) so a restart does not
+    # invalidate live sessions.
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?set AIRFLOW_API_SECRET_KEY in .env}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_SECRET_KEY:?set AIRFLOW_API_SECRET_KEY in .env}
+
+    # Serves the scheduler healthcheck below on :8974.
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+
+  volumes: &airflow-common-volumes
+    # Read-only: nothing in Airflow needs to write to the DAG tree.
+    - ./dags:/opt/airflow/dags:ro
+    # Replaces MinIO remote logging: one volume every service mounts, so the
+    # api-server can read the log a worker wrote. Workers stay disposable --
+    # the logs are in the volume, not in the container.
+    - airflow-logs:/opt/airflow/logs
+
+  user: "${AIRFLOW_UID:-50000}:0"
+
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+  restart: unless-stopped
+
+services:
+  # --- Backing services -----------------------------------------------------
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      # Named volume, so `docker compose down` keeps the metadata DB and
+      # `down -v` (make clean) is the explicit way to throw it away.
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-bookworm
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # --- Bootstrap (both exit; they are not long-running services) ------------
+  # Migrations, roles, users. Every Airflow service below waits for this to
+  # complete successfully, so nothing starts against an unmigrated database.
+  airflow-init:
+    <<: *airflow-common
+    command: ["bash", "-c", "/opt/airflow/bootstrap/init.sh"]
+    environment:
+      <<: *airflow-common-env
+      ROLES_DIR: /opt/airflow/roles
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      ALICE_PASSWORD: ${ALICE_PASSWORD:-alice}
+      BOB_PASSWORD: ${BOB_PASSWORD:-bob}
+      CAROL_PASSWORD: ${CAROL_PASSWORD:-carol}
+    volumes:
+      - ./dags:/opt/airflow/dags:ro
+      - airflow-logs:/opt/airflow/logs
+      # bootstrap/ carries init.sh, sync-perm.sh AND reconcile_roles.py.
+      - ./bootstrap:/opt/airflow/bootstrap:ro
+      - ./roles:/opt/airflow/roles:ro
+    depends_on: *airflow-common-depends-on
+    restart: "no"
+
+  # Applies each DAG's access_control, once the dag processor has serialized
+  # them. Exits 0; showing as "exited" in `docker compose ps` is expected.
+  airflow-bootstrap:
+    <<: *airflow-common
+    command: ["bash", "-c", "/opt/airflow/bootstrap/sync-perm.sh"]
+    volumes:
+      - ./dags:/opt/airflow/dags:ro
+      - airflow-logs:/opt/airflow/logs
+      - ./bootstrap:/opt/airflow/bootstrap:ro
+    depends_on:
+      airflow-apiserver:
+        condition: service_healthy
+      airflow-scheduler:
+        condition: service_healthy
+      airflow-dag-processor:
+        condition: service_healthy
+    restart: "no"
+
+  # --- Airflow components ---------------------------------------------------
+  airflow-apiserver:
+    <<: *airflow-common
+    command: ["api-server"]
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: ["scheduler"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["dag-processor"]
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "DagProcessorJob", "--local"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: ["triggerer"]
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "TriggererJob", "--local"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # --- Worker classes -------------------------------------------------------
+  # One container per class, each consuming only its own Celery queue -- the
+  # compose equivalent of the kind stack's three worker Deployments
+  # (airflow.workers.celery.sets in chart/values.yaml). The three differ ONLY in
+  # queue name and resource cap, which is the whole point: a DAG picks its class
+  # with `queue=`, exactly as it does under kind.
+  #
+  #   Route a DAG to a class:    with DAG(..., default_args={"queue": "medium"})
+  #   Route a single task:       @task(queue="large")
+  #   No queue at all:           -> `small` (AIRFLOW__OPERATORS__DEFAULT_QUEUE)
+  #
+  # DUMB_INIT_SETSID=0 lets a warm shutdown reach the Celery worker so running
+  # tasks are given a chance to finish instead of being killed outright.
+  airflow-worker-small:
+    <<: *airflow-common
+    command: ["celery", "worker", "--queues", "small"]
+    environment:
+      <<: *airflow-common-env
+      DUMB_INIT_SETSID: "0"
+    cpus: ${WORKER_SMALL_CPUS:-0.5}
+    mem_limit: ${WORKER_SMALL_MEM:-512m}
+    healthcheck:
+      test: ["CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"']
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker-medium:
+    <<: *airflow-common
+    command: ["celery", "worker", "--queues", "medium"]
+    environment:
+      <<: *airflow-common-env
+      DUMB_INIT_SETSID: "0"
+    cpus: ${WORKER_MEDIUM_CPUS:-1.0}
+    mem_limit: ${WORKER_MEDIUM_MEM:-1g}
+    healthcheck:
+      test: ["CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"']
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker-large:
+    <<: *airflow-common
+    command: ["celery", "worker", "--queues", "large"]
+    environment:
+      <<: *airflow-common-env
+      DUMB_INIT_SETSID: "0"
+    cpus: ${WORKER_LARGE_CPUS:-2.0}
+    mem_limit: ${WORKER_LARGE_MEM:-2g}
+    healthcheck:
+      test: ["CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"']
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db:
+  airflow-logs:

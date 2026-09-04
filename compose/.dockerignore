@@ -1,0 +1,5 @@
+# The image is built from this directory but COPYs nothing -- the Dockerfile
+# only hardens the base image, and DAGs are bind-mounted at run time. Keep the
+# build context empty so a stray local file (notably .env, which holds this
+# stack's secrets) can never end up in a layer.
+*

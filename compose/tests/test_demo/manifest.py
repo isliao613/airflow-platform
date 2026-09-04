@@ -1,5 +1,5 @@
 """What the ``demo`` project ships -- the single source of truth its tests
-assert against. Mirrors ``dags/demo/`` and ``chart/files/roles/demo.json``.
+assert against. Mirrors ``compose/dags/demo/`` and ``compose/roles/demo.json``.
 
 A file that silently stops defining a DAG -- or an unexpected new one --
 fails ``test_dags.py`` instead of slipping through.
@@ -13,17 +13,16 @@ EXPECTED_DAG_IDS = {
     "team_a_pipeline",
     "team_b_pipeline",
     "team_c_pipeline",
+    "hello_world",
     "hello_small",
     "hello_medium",
     "hello_large",
-    "hello_kubernetes",
-    "hello_world",
-    "always_fails",
 }
 
 # dag_id -> the single FAB role its access_control grants. test_dags asserts
 # the DAG grants exactly this role {can_read, can_edit}. That a matching role
-# exists in chart/files/roles/demo.json is a deploy concern, not checked here.
+# exists in roles/demo.json, and that a user holds it, are deploy concerns
+# (bootstrap/init.sh), not checked here.
 TEAM_DAG_ROLE = {
     "team_a_pipeline": "team_a",
     "team_b_pipeline": "team_b",
@@ -32,8 +31,8 @@ TEAM_DAG_ROLE = {
 
 # dag_id -> the Celery queue / worker class the DAG's task pins itself to.
 # test_worker_placement.py asserts the DAG declares exactly this queue; that a
-# matching worker set exists (airflow.workers.celery.sets in
-# chart/values.yaml) is a deploy concern, checked by the `make up` smoke run.
+# matching airflow-worker-<class> service exists in docker-compose.yaml is a
+# deploy concern, checked by the `make up` smoke run.
 QUEUE_DAG_CLASS = {
     "hello_small": "small",
     "hello_medium": "medium",
@@ -43,10 +42,8 @@ QUEUE_DAG_CLASS = {
 # DAGs that deliberately carry NO access_control -- "only the Airflow Admin
 # role sees it", because no team role holds the global DAGs permission.
 NO_ACL_DAG_IDS = {
+    "hello_world",
     "hello_small",
     "hello_medium",
     "hello_large",
-    "hello_kubernetes",
-    "hello_world",
-    "always_fails",
 }

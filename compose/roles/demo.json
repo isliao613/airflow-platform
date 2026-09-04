@@ -1,0 +1,362 @@
+[
+  {
+    "name": "team_a",
+    "resource": "Asset Aliases",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "Assets",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "Backfills",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "Browse",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "Cluster Activity",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "DAG Code",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "DAG Dependencies",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "DAG Runs",
+    "action": "can_create,can_delete,can_edit,can_read,menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "DAG Versions",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "DAG Warnings",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "DAGs",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "Docs",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "Documentation",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "HITL Detail",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "ImportError",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "Jobs",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "My Password",
+    "action": "can_edit,can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "My Profile",
+    "action": "can_edit,can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "Pools",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "SLA Misses",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "Task Instances",
+    "action": "can_create,can_delete,can_edit,can_read,menu_access"
+  },
+  {
+    "name": "team_a",
+    "resource": "Task Logs",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "Website",
+    "action": "can_read"
+  },
+  {
+    "name": "team_a",
+    "resource": "XComs",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "Asset Aliases",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "Assets",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "Backfills",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "Browse",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "Cluster Activity",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "DAG Code",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "DAG Dependencies",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "DAG Runs",
+    "action": "can_create,can_delete,can_edit,can_read,menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "DAG Versions",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "DAG Warnings",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "DAGs",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "Docs",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "Documentation",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "HITL Detail",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "ImportError",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "Jobs",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "My Password",
+    "action": "can_edit,can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "My Profile",
+    "action": "can_edit,can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "Pools",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "SLA Misses",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "Task Instances",
+    "action": "can_create,can_delete,can_edit,can_read,menu_access"
+  },
+  {
+    "name": "team_b",
+    "resource": "Task Logs",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "Website",
+    "action": "can_read"
+  },
+  {
+    "name": "team_b",
+    "resource": "XComs",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "Asset Aliases",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "Assets",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "Backfills",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "Browse",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "Cluster Activity",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "DAG Code",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "DAG Dependencies",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "DAG Runs",
+    "action": "can_create,can_delete,can_edit,can_read,menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "DAG Versions",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "DAG Warnings",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "DAGs",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "Docs",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "Documentation",
+    "action": "menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "HITL Detail",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "ImportError",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "Jobs",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "My Password",
+    "action": "can_edit,can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "My Profile",
+    "action": "can_edit,can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "Pools",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "SLA Misses",
+    "action": "can_read,menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "Task Instances",
+    "action": "can_create,can_delete,can_edit,can_read,menu_access"
+  },
+  {
+    "name": "team_c",
+    "resource": "Task Logs",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "Website",
+    "action": "can_read"
+  },
+  {
+    "name": "team_c",
+    "resource": "XComs",
+    "action": "can_read"
+  }
+]
