@@ -6,8 +6,10 @@
 #   * no `COPY dags/` -- compose bind-mounts ../dags into every container
 #     instead (see docker-compose.yaml), so a DAG edit is picked up by the dag
 #     processor without a rebuild;
-#   * no socat -- that existed only for the Keycloak sidecar in the kind
-#     stack, and this stack has no SSO.
+#   * no socat -- this stack has Keycloak SSO too, but the kind stack's socat
+#     sidecar (one Keycloak URL for both the browser and the pod) is replaced
+#     by KC_HOSTNAME_BACKCHANNEL_DYNAMIC on the `keycloak` service, so nothing
+#     in the image proxies a port.
 #
 # `apt-get upgrade` makes the build non-reproducible on purpose: the same tag
 # rebuilt later can contain different package versions. Bump IMAGE_TAG in .env

@@ -2,11 +2,18 @@
 # per-team isolation model, no Kubernetes.
 #
 # Dropped relative to the kind stack, all of them Kubernetes-shaped concerns:
-#   * Keycloak / SSO      -> local FAB users in the metadata DB (bootstrap/init.sh)
 #   * Vault               -> literals in .env, this file's single source of truth
 #   * MinIO remote logging-> a shared `airflow-logs` volume every service mounts
 #   * Postgres HA         -> one Postgres container; there is nothing to fail over
 #   * KubernetesExecutor  -> CeleryExecutor only; route with `queue=` instead
+#
+# Kept: Keycloak / OIDC SSO. Same realm, same group -> role mapping as the kind
+# stack, run as one more compose service (`keycloak` below) instead of a
+# Deployment + Service + ConfigMap. The kind stack's socat sidecar -- there only
+# to make one Keycloak URL resolve identically from the browser and from inside
+# the pod -- is replaced by KC_HOSTNAME_BACKCHANNEL_DYNAMIC on that service, so
+# the compose image needs no socat. See config/webserver_config.py for the FAB
+# side and the `keycloak` service for the URL split.
 #
 # DAGs are bind-mounted from ./dags rather than baked into the image, so an edit
 # is picked up by the dag processor with no rebuild.
@@ -38,6 +45,20 @@ x-airflow-common: &airflow-common
     # isolation model below silently does nothing. The kind stack sets the same
     # thing via the chart's airflow.cfg.
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+
+    # --- Keycloak SSO -----------------------------------------------------
+    # config/webserver_config.py (mounted into every component below) flips the
+    # auth type to AUTH_OAUTH and maps Keycloak groups -> Airflow roles. These
+    # are the knobs it reads. AIRFLOW_KEYCLOAK_INTERNAL_URL is the address THIS
+    # side dials for OIDC discovery / token / userinfo -- the compose service
+    # name, reachable from every Airflow container; the browser-facing URL
+    # (http://localhost:${KEYCLOAK_PORT}) comes back inside the discovery doc,
+    # so it is not repeated here. See the `keycloak` service for why the two
+    # can differ without breaking the token issuer check.
+    AIRFLOW_KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+    AIRFLOW_KEYCLOAK_REALM: airflow
+    AIRFLOW_KEYCLOAK_CLIENT_ID: airflow
+    AIRFLOW_KEYCLOAK_CLIENT_SECRET: ${AIRFLOW_KEYCLOAK_CLIENT_SECRET:-airflow-local-dev-oidc-client-secret}
 
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
@@ -74,6 +95,9 @@ x-airflow-common: &airflow-common
     # api-server can read the log a worker wrote. Workers stay disposable --
     # the logs are in the volume, not in the container.
     - airflow-logs:/opt/airflow/logs
+    # FAB auth config (Keycloak SSO). Mounted into every component, not just the
+    # api-server: FAB authorizes against AUTH_ROLES_MAPPING wherever it runs.
+    - ./config/webserver_config.py:/opt/airflow/webserver_config.py:ro
 
   user: "${AIRFLOW_UID:-50000}:0"
 
@@ -115,6 +139,59 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # --- SSO ---------------------------------------------------------------
+  # Keycloak, importing the same realm the kind stack ships (groups
+  # airflow-team-a/b/c + airflow-admins, an `airflow` OIDC client, four demo
+  # users). The realm travels as a bind-mounted file, so editing
+  # ./sso/realm-airflow.json and `make up` again re-imports it.
+  #
+  # THE URL SPLIT. authlib rejects a token whose `iss` claim does not match the
+  # `issuer` it read from OIDC discovery. The browser must reach Keycloak at
+  # http://localhost:${KEYCLOAK_PORT}; the Airflow containers reach it at
+  # http://keycloak:8080 (compose DNS). The kind stack collapses those to one
+  # URL with a socat sidecar. Here KC_HOSTNAME_BACKCHANNEL_DYNAMIC does it:
+  #   * issuer + authorization_endpoint stay fixed at KC_HOSTNAME
+  #     (http://localhost:${KEYCLOAK_PORT}) -- so the browser redirect works and
+  #     the `iss` in every token still equals the discovery `issuer`;
+  #   * token / userinfo / JWKS endpoints are rewritten per request -- so when
+  #     the api-server fetches discovery on keycloak:8080 it gets back
+  #     keycloak:8080 URLs it can actually reach.
+  # No proxy needed. config/webserver_config.py has the matching FAB side.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.2
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Dev-mode admin for the Keycloak console itself
+      # (http://localhost:${KEYCLOAK_PORT}). Unrelated to the four realm users;
+      # a local-dev literal like everything else in .env.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Front-channel (browser) base URL. Must equal what users actually type.
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8181}
+      KC_HTTP_ENABLED: "true"
+      # Resolve back-channel URLs (token, userinfo, jwks, issuer) from the
+      # incoming request instead of KC_HOSTNAME -- see the URL-split note above.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      # Serves /health/ready on the management port (9000) for the healthcheck.
+      KC_HEALTH_ENABLED: "true"
+      # Substituted into ./sso/realm-airflow.json at import as the `airflow`
+      # client secret; config/webserver_config.py reads the same value. Keeping
+      # both from this one .env var is what stops them drifting.
+      AIRFLOW_KEYCLOAK_CLIENT_SECRET: ${AIRFLOW_KEYCLOAK_CLIENT_SECRET:-airflow-local-dev-oidc-client-secret}
+    ports:
+      - "${KEYCLOAK_PORT:-8181}:8080"
+    volumes:
+      - ./sso/realm-airflow.json:/opt/keycloak/data/import/realm-airflow.json:ro
+    healthcheck:
+      # No curl in the Keycloak image; this bash /dev/tcp form is the one from
+      # Keycloak's own container docs. Ready = realm imported and serving.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/9000; printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3 | grep -q '200 OK'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
   # --- Bootstrap (both exit; they are not long-running services) ------------
   # Migrations, roles, users. Every Airflow service below waits for this to
   # complete successfully, so nothing starts against an unmigrated database.
@@ -124,6 +201,11 @@ services:
     environment:
       <<: *airflow-common-env
       ROLES_DIR: /opt/airflow/roles
+      # Identities come from Keycloak, so local FAB users are off by default:
+      # under AUTH_TYPE=AUTH_OAUTH the login form is gone and they could never
+      # sign in. Set CREATE_LOCAL_USERS=true in .env only if you also disable
+      # SSO. The *_PASSWORD values are read solely by that path.
+      CREATE_LOCAL_USERS: ${CREATE_LOCAL_USERS:-false}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
       ALICE_PASSWORD: ${ALICE_PASSWORD:-alice}
       BOB_PASSWORD: ${BOB_PASSWORD:-bob}
@@ -131,6 +213,7 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags:ro
       - airflow-logs:/opt/airflow/logs
+      - ./config/webserver_config.py:/opt/airflow/webserver_config.py:ro
       # bootstrap/ carries init.sh, sync-perm.sh AND reconcile_roles.py.
       - ./bootstrap:/opt/airflow/bootstrap:ro
       - ./roles:/opt/airflow/roles:ro
@@ -145,6 +228,7 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags:ro
       - airflow-logs:/opt/airflow/logs
+      - ./config/webserver_config.py:/opt/airflow/webserver_config.py:ro
       - ./bootstrap:/opt/airflow/bootstrap:ro
     depends_on:
       airflow-apiserver:
@@ -171,6 +255,10 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+      # Only the api-server serves the login flow, so it is the only component
+      # that has to wait for the realm import to finish.
+      keycloak:
+        condition: service_healthy
 
   airflow-scheduler:
     <<: *airflow-common

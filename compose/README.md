@@ -1,21 +1,21 @@
 # airflow-platform — Docker Compose stack
 
 A second way to run this repo's Airflow platform: same DAGs, same per-team
-isolation model, **no Kubernetes**. Apache Airflow 3.3.1 on `CeleryExecutor`,
-brought up with one `make up`.
+isolation model, same Keycloak SSO, **no Kubernetes**. Apache Airflow 3.3.1 on
+`CeleryExecutor`, brought up with one `make up`.
 
 **This directory is self-contained.** Its own `dags/`, `roles/`,
-`reconcile_roles.py` and `tests/`; nothing in it reads anything outside
-`compose/`, so the folder can be lifted into its own repo as-is. The repo root
-is a separate Kubernetes stack carrying its own copies of all four — the two
+`reconcile_roles.py`, `sso/` realm and `tests/`; nothing in it reads anything
+outside `compose/`, so the folder can be lifted into its own repo as-is. The
+repo root is a separate Kubernetes stack carrying its own copies — the two
 evolve independently, and a change to one does not touch the other.
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose plugin
   (`docker compose version` ≥ 2)
-- Roughly 6 GB of memory available to Docker (three worker classes + Postgres +
-  Redis + five Airflow services)
+- Roughly 7 GB of memory available to Docker (three worker classes + Postgres +
+  Redis + Keycloak + five Airflow services)
 
 ## Quickstart
 
@@ -24,30 +24,35 @@ cd compose
 make up
 ```
 
-This builds the CVE-hardened image, starts Postgres and Redis, runs the
-migrations, creates the team roles and four local users, brings up the
-api-server / scheduler / dag-processor / triggerer and the three worker classes,
-then applies each DAG's `access_control`.
+This builds the CVE-hardened image, starts Postgres, Redis and Keycloak (which
+imports the `airflow` realm), runs the migrations, creates the team roles,
+brings up the api-server / scheduler / dag-processor / triggerer and the three
+worker classes, then applies each DAG's `access_control`.
 
-Then open <http://localhost:8080>:
+Then open <http://localhost:8080>, click **Sign in with keycloak**, and log in
+as one of the realm users (username == password):
 
-| User    | Password | Role     | Sees                       |
-|---------|----------|----------|----------------------------|
-| `alice` | `alice`  | `team_a` | `team_a_pipeline` only     |
-| `bob`   | `bob`    | `team_b` | `team_b_pipeline` only     |
-| `carol` | `carol`  | `team_c` | `team_c_pipeline` only     |
-| `admin` | `admin`  | `Admin`  | every DAG                  |
+| User    | Keycloak group  | Airflow role | Sees                   |
+|---------|-----------------|--------------|------------------------|
+| `alice` | `airflow-team-a` | `team_a`    | `team_a_pipeline` only |
+| `bob`   | `airflow-team-b` | `team_b`    | `team_b_pipeline` only |
+| `carol` | `airflow-team-c` | `team_c`    | `team_c_pipeline` only |
+| `admin` | `airflow-admins` | `Admin`     | every DAG              |
+
+The Keycloak admin console is at <http://localhost:8181> (`admin`/`admin`).
 
 `make down` stops the stack and keeps the metadata database; `make clean` also
-deletes it.
+deletes it. Keycloak runs `start-dev` with an in-memory database, so the realm
+is re-imported from `sso/realm-airflow.json` on every start regardless.
 
 ## What this stack drops, and what replaced it
 
-Everything removed here was a Kubernetes-shaped concern, not an Airflow one:
+Everything removed here was a Kubernetes-shaped concern, not an Airflow one.
+Keycloak / OIDC SSO is **not** on the list — it is kept, as the `keycloak`
+service (see [SSO](#sso) below):
 
 | Dropped                        | Replaced by                                                                 |
 |--------------------------------|-----------------------------------------------------------------------------|
-| Keycloak / OIDC SSO            | Local FAB users in the metadata DB, each pinned to a role (`bootstrap/init.sh`) |
 | Vault                          | Literals in `.env` — one file, still throwaway local-dev values             |
 | MinIO remote task logging      | A shared `airflow-logs` volume every service mounts                         |
 | Postgres 1 primary + 2 replicas, `failover.sh` / `failback.sh` | One `postgres:16` container — there is nothing to fail over to |
@@ -55,39 +60,67 @@ Everything removed here was a Kubernetes-shaped concern, not an Airflow one:
 | Helm chart, `kind`, NodePorts  | `docker-compose.yaml` and a published port                                  |
 | `KubernetesExecutor` (per-task pods) | Nothing — route with `queue=` to a worker class instead              |
 
-## How the isolation works without Keycloak
+## SSO
 
-The mechanism is the same as the `kind` stack's; only the identity source
-changes. Three pieces have to line up:
+Sign-in goes through Keycloak, exactly as in the `kind` stack — same realm
+(`sso/realm-airflow.json`), same groups, same group → role mapping. What differs
+is only the packaging:
+
+| | `kind` stack | this stack |
+|---|---|---|
+| Keycloak | Deployment + Service + realm ConfigMap | one `keycloak` compose service, realm bind-mounted |
+| Client secret | Vault → rendered into the realm + a k8s Secret | `AIRFLOW_KEYCLOAK_CLIENT_SECRET` in `.env`, into both the realm and `webserver_config.py` |
+| FAB config | `apiServerConfig` in `values.yaml`, via Helm `tpl` | `config/webserver_config.py`, bind-mounted into every component |
+| One Keycloak URL for browser **and** pod | socat sidecar publishing `127.0.0.1:8181` in the pod | `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` on the `keycloak` service |
+
+**The URL split.** authlib rejects a token whose `iss` claim differs from the
+`issuer` it read from OIDC discovery. The browser reaches Keycloak at
+`http://localhost:8181`; the Airflow containers reach it at `http://keycloak:8080`.
+`KC_HOSTNAME` keeps `issuer` and `authorization_endpoint` fixed at
+`http://localhost:8181` — so the browser redirect works and every token's `iss`
+still equals the discovery `issuer` — while `KC_HOSTNAME_BACKCHANNEL_DYNAMIC`
+rewrites the token / userinfo / JWKS endpoints per request, so the api-server
+fetching discovery on `keycloak:8080` gets back `keycloak:8080` URLs it can
+actually reach. No proxy needed.
+
+## How the isolation works
+
+The mechanism is the same as the `kind` stack's. Three pieces have to line up:
 
 1. **Team roles hold no global DAG permission.** The per-project role files under
    `roles/` give each team role the built-in Viewer permissions
    **minus** `can_read` on the global `DAGs` resource. That single omission is
    the whole mechanism — `FabAuthManager._is_authorized_dag()` short-circuits to
    "allow everything" for anyone holding it.
-2. **Each user is pinned to one role.** `bootstrap/init.sh` creates
-   `alice`/`bob`/`carol` with `--role team_a`/`team_b`/`team_c`. This is what
-   replaces `AUTH_ROLES_MAPPING` + `AUTH_ROLES_SYNC_AT_LOGIN`: to move someone
-   between teams, change the role on the user
-   (`airflow users add-role` / `remove-role`), not a group in an identity provider.
+2. **Group membership picks the role.** `config/webserver_config.py` sets
+   `AUTH_ROLES_MAPPING` (`airflow-team-a` → `team_a`, …, `airflow-admins` →
+   `Admin`) and `AUTH_ROLES_SYNC_AT_LOGIN = True`, so the `groups` claim is
+   re-read on every login and the user's roles rewritten to match. To move
+   someone between teams, change their group in Keycloak — nothing in Airflow.
 3. **Each DAG grants itself to one role.** Every team DAG declares
    `access_control={"team_x": {"can_read", "can_edit"}}`, which
    `airflow sync-perm --include-dags` turns into a `DAG:<dag_id>` permission on
    that role.
 
 A DAG with no `access_control` is visible to nobody but `Admin` — that covers
-`hello_world` and the three `hello_<class>` DAGs.
+`hello_world` and the three `hello_<class>` DAGs. A user in no mapped group
+lands on `Public` and sees nothing.
 
 `AIRFLOW__CORE__AUTH_MANAGER` is set to `FabAuthManager` in
 `docker-compose.yaml`. Airflow 3 defaults to `SimpleAuthManager`, which has no
 roles or per-DAG permissions at all — without that setting the whole model above
 silently does nothing.
 
+Local FAB users (`bootstrap/init.sh`) are off by default (`CREATE_LOCAL_USERS`):
+under `AUTH_TYPE=AUTH_OAUTH` the login form is gone, so they could never sign in.
+Flip that var only if you also strip the SSO wiring back out.
+
 ### Why bootstrap is two services
 
-`airflow-init` runs migrations, imports and reconciles the roles, and creates the
-users. Everything else `depends_on` it with `service_completed_successfully`, so
-nothing starts against an unmigrated database.
+`airflow-init` runs migrations and imports and reconciles the roles (the
+`AUTH_ROLES_MAPPING` targets must exist before anyone logs in). Everything else
+`depends_on` it with `service_completed_successfully`, so nothing starts against
+an unmigrated database.
 
 `airflow-bootstrap` runs `airflow sync-perm --include-dags` and waits on the
 api-server, scheduler and dag-processor being healthy. It cannot be folded into
@@ -180,7 +213,9 @@ deployment does not configure is a hard DAG **parse** error, not a run-time one
 | `Makefile`                 | Thin `docker compose` wrapper; `make help` lists targets                        |
 | `dags/`                    | This stack's DAGs, one folder per project (`demo/`), bind-mounted at run time   |
 | `roles/`                   | One role file per project; imported and reconciled by `bootstrap/init.sh`       |
-| `bootstrap/init.sh`        | Migrations, role import + reconcile, local user creation                        |
+| `sso/realm-airflow.json`   | Keycloak realm — groups, `airflow` OIDC client, four demo users; imported on every start |
+| `config/webserver_config.py` | FAB auth config (Keycloak SSO); bind-mounted into every Airflow component       |
+| `bootstrap/init.sh`        | Migrations, role import + reconcile, (opt-in) local user creation               |
 | `bootstrap/sync-perm.sh`   | Waits for DAG serialization, then applies each DAG's `access_control`           |
 | `bootstrap/reconcile_roles.py` | Gap-free reconcile of the role files against the live DB (delta only, add-before-delete, refuses FAB built-ins) |
 | `tests/`                   | Unit tests for `dags/`; sits beside it, so the dag processor never sees them    |
@@ -197,6 +232,7 @@ deployment does not configure is a hard DAG **parse** error, not a run-time one
 | `make ps`             | Container status                                                |
 | `make logs`           | Tail every service                                              |
 | `make logs-scheduler` | Tail the scheduler only                                         |
+| `make logs-keycloak`  | Tail Keycloak (realm import, login errors)                      |
 | `make shell`          | Shell in a throwaway container with the Airflow CLI             |
 | `make test`           | Run this stack's `dags/` unit tests inside its own image         |
 | `make clean`          | Stop everything and delete the volumes                          |
@@ -205,6 +241,8 @@ deployment does not configure is a hard DAG **parse** error, not a run-time one
 
 Every secret in `.env` is a hardcoded local-development value, exactly as in the
 `kind` stack — moving them out of Vault changed *where* they live, not that they
-are throwaway. Replace `AIRFLOW_FERNET_KEY`, `AIRFLOW_API_SECRET_KEY`, the four
-user passwords and the Postgres credentials in `docker-compose.yaml` before this
-is reachable by anyone but you.
+are throwaway. Replace `AIRFLOW_FERNET_KEY`, `AIRFLOW_API_SECRET_KEY`,
+`AIRFLOW_KEYCLOAK_CLIENT_SECRET`, the Keycloak admin password and the Postgres
+credentials in `docker-compose.yaml` before this is reachable by anyone but you.
+The four realm users' passwords live in `sso/realm-airflow.json` (username ==
+password); change them there.

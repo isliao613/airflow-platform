@@ -8,18 +8,19 @@ export
 
 COMPOSE := docker compose
 
-.PHONY: up down build rebuild ps logs logs-scheduler shell test clean help
+.PHONY: up down build rebuild ps logs logs-scheduler logs-keycloak shell test clean help
 
 up: ## Build the image and start the whole stack
 	$(COMPOSE) up -d --build
 	@echo ""
-	@echo "Airflow $(AIRFLOW_VERSION) is up (CeleryExecutor, no SSO)."
-	@echo "  Airflow UI: http://localhost:$(AIRFLOW_PORT)"
+	@echo "Airflow $(AIRFLOW_VERSION) is up (CeleryExecutor, Keycloak SSO)."
+	@echo "  Airflow UI:       http://localhost:$(AIRFLOW_PORT)  (Sign in with keycloak)"
+	@echo "  Keycloak console: http://localhost:$(KEYCLOAK_PORT)  ($(KEYCLOAK_ADMIN)/$(KEYCLOAK_ADMIN_PASSWORD))"
 	@echo ""
-	@echo "  alice / alice -> team_a -> sees team_a_pipeline only"
-	@echo "  bob   / bob   -> team_b -> sees team_b_pipeline only"
-	@echo "  carol / carol -> team_c -> sees team_c_pipeline only"
-	@echo "  admin / admin -> Admin  -> sees every DAG"
+	@echo "  alice / alice -> airflow-team-a -> sees team_a_pipeline only"
+	@echo "  bob   / bob   -> airflow-team-b -> sees team_b_pipeline only"
+	@echo "  carol / carol -> airflow-team-c -> sees team_c_pipeline only"
+	@echo "  admin / admin -> airflow-admins -> sees every DAG"
 
 down: ## Stop and remove the containers, KEEPING the metadata DB and logs
 	$(COMPOSE) down
@@ -39,6 +40,9 @@ logs: ## Tail every service's logs
 
 logs-scheduler: ## Tail scheduler logs
 	$(COMPOSE) logs -f --tail=100 airflow-scheduler
+
+logs-keycloak: ## Tail Keycloak logs (realm import, login errors)
+	$(COMPOSE) logs -f --tail=100 keycloak
 
 shell: ## Open a shell in a throwaway container with the Airflow CLI
 	$(COMPOSE) run --rm --no-deps airflow-scheduler bash

@@ -63,16 +63,18 @@ fi
 
 echo
 echo "== users =="
-# There is no identity provider here: identities are local FAB users in the
-# metadata DB, each pinned to a role at creation time. To move someone between
-# teams, change the role on the user (`airflow users add-role` / `remove-role`).
+# Identities come from Keycloak (see the `keycloak` service and
+# config/webserver_config.py): a Keycloak group maps to an Airflow role at
+# login, and under AUTH_TYPE=AUTH_OAUTH the local login form is gone, so local
+# FAB users cannot sign in. This block is therefore skipped unless
+# CREATE_LOCAL_USERS=true -- set that in .env only if you have also disabled
+# SSO and want the old local-users-in-the-metadata-DB behaviour back.
 #
-# Note this only CREATES users. It deliberately does not reconcile the role of a
+# When it does run it only CREATES users; it does not reconcile the role of a
 # user that already exists -- the Postgres volume outlives `make down`, so a
-# role change made by hand is not silently reverted on the next `make up`.
-#
-# The team roles must already exist, which is why this runs after the role
-# block above -- `users create --role team_a` errors on an unknown role.
+# role change made by hand is not silently reverted on the next `make up`. The
+# team roles must already exist, which is why this runs after the role block
+# above -- `users create --role team_a` errors on an unknown role.
 create_user() {
   local username=$1 role=$2 firstname=$3 lastname=$4 password=$5
 
@@ -93,10 +95,14 @@ create_user() {
     --password "$password"
 }
 
-create_user admin "Admin"  Admin User     "${ADMIN_PASSWORD:-admin}"
-create_user alice "team_a" Alice Anderson "${ALICE_PASSWORD:-alice}"
-create_user bob   "team_b" Bob   Brown    "${BOB_PASSWORD:-bob}"
-create_user carol "team_c" Carol Clark    "${CAROL_PASSWORD:-carol}"
+if [ "${CREATE_LOCAL_USERS:-false}" = "true" ]; then
+  create_user admin "Admin"  Admin User     "${ADMIN_PASSWORD:-admin}"
+  create_user alice "team_a" Alice Anderson "${ALICE_PASSWORD:-alice}"
+  create_user bob   "team_b" Bob   Brown    "${BOB_PASSWORD:-bob}"
+  create_user carol "team_c" Carol Clark    "${CAROL_PASSWORD:-carol}"
+else
+  echo "  CREATE_LOCAL_USERS != true -- skipping local users (identities come from Keycloak)"
+fi
 
 echo
 echo "== init complete =="
